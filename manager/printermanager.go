@@ -9,20 +9,24 @@ https://developers.google.com/open-source/licenses/bsd
 package manager
 
 import (
-	"fmt"
+"fmt"
 	"hash/adler32"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
-
+    "io"
+    "io/ioutil"
+	"crypto/md5"
+    "encoding/json"
 	"github.com/google/cups-connector/cdd"
 	"github.com/google/cups-connector/gcp"
 	"github.com/google/cups-connector/lib"
 	"github.com/google/cups-connector/log"
 	"github.com/google/cups-connector/privet"
 	"github.com/google/cups-connector/xmpp"
+    
 )
 
 type NativePrintSystem interface {
@@ -31,7 +35,17 @@ type NativePrintSystem interface {
 	Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, error)
 	RemoveCachedPPD(printerName string)
 }
-
+type PrintersInJsonFile struct {
+	LocalPrintingEnable bool `json:"local_printing_enable"`
+	CloudPrintingEnable bool `json:"cloud_printing_enable"`
+	XmppJid string `json:"xmpp_jid"`
+	RobotRefreshToken string `json:"robot_refresh_token"`
+	UserRefreshToken string `json:"user_refresh_token"`
+	ShareScope string `json:"share_scope"`
+	ProxyName string `json:"proxy_name"`
+	PrinterBlacklist []string `json:"printer_blacklist"`
+	LogLevel string `json:"log_level"`
+}
 // Manages state and interactions between the native print system and Google Cloud Print.
 type PrinterManager struct {
 	native NativePrintSystem
@@ -40,12 +54,14 @@ type PrinterManager struct {
 	privet *privet.Privet
 
 	printers *lib.ConcurrentPrinterMap
-
+	hashCodeJsonFileOld []byte
+	hashCodeJsonFileNew []byte
 	// Job stats are numbers reported to monitoring.
 	jobStatsMutex sync.Mutex
 	jobsDone      uint
 	jobsError     uint
-
+    ///Jsonobject of the printers that is in cloud
+    PrintersInTheJsonFile PrintersInJsonFile
 	// Jobs in flight are jobs that have been received, and are not
 	// finished printing yet. Key is Job ID.
 	jobsInFlightMutex sync.Mutex
@@ -61,8 +77,15 @@ type PrinterManager struct {
 func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, privet *privet.Privet, printerPollInterval time.Duration, nativeJobQueueSize uint, jobFullUsername bool, shareScope string, jobs <-chan *lib.Job, xmppNotifications <-chan xmpp.PrinterNotification) (*PrinterManager, error) {
 	var printers *lib.ConcurrentPrinterMap
 	var queuedJobsCount map[string]uint
-
+    var conf PrintersInJsonFile
 	var err error
+
+    file, err := ioutil.ReadFile("gcp-windows-connector.config.json")
+     if (err!=nil){
+      json.Unmarshal(file,&conf)
+     }
+  
+   
 	if gcp != nil {
 		// Get all GCP printers.
 		var gcpPrinters []lib.Printer
@@ -90,6 +113,8 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
 		jobStatsMutex: sync.Mutex{},
 		jobsDone:      0,
 		jobsError:     0,
+
+        PrintersInTheJsonFile: conf,
 
 		jobsInFlightMutex: sync.Mutex{},
 		jobsInFlight:      make(map[string]struct{}),
@@ -159,12 +184,24 @@ func (pm *PrinterManager) syncPrintersPeriodically(interval time.Duration) {
 
 func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 	log.Info("Synchronizing printers, stand by")
+	pm.hashCodeJsonFileNew = computeMd5("gcp-windows-connector.config.json")
+    var PrintersInCloud,_,_=pm.gcp.ListPrinters()
 
 	// Get current snapshot of native printers.
 	nativePrinters, err := pm.native.GetPrinters()
-	if err != nil {
+   
+    if err != nil {
 		return fmt.Errorf("Sync failed while calling GetPrinters(): %s", err)
 	}
+    if (reflect.DeepEqual(pm.hashCodeJsonFileNew, pm.hashCodeJsonFileOld)==false){
+    file, err := ioutil.ReadFile("gcp-windows-connector.config.json")
+     
+      json.Unmarshal(file,&pm.PrintersInTheJsonFile)
+     
+     if err != nil {
+		return fmt.Errorf("Sync failed while calling readFile(): %s", err)
+	}
+    }
 
 	// Set CapsHash on all printers.
 	for i := range nativePrinters {
@@ -178,7 +215,7 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 	}
 
 	// Compare the snapshot to what we know currently.
-	diffs := lib.DiffPrinters(nativePrinters, pm.printers.GetAll())
+	diffs := lib.DiffPrinters(nativePrinters, pm.printers.GetAll(), pm.PrintersInTheJsonFile.PrinterBlacklist, PrintersInCloud)
 	if diffs == nil {
 		log.Infof("Printers are already in sync; there are %d", len(nativePrinters))
 		return nil
@@ -192,15 +229,16 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 	currentPrinters := make([]lib.Printer, 0, len(diffs))
 	for _ = range diffs {
 		p := <-ch
-		if p.Name != "" {
+		if p.Name != "" && !lib.StringInSlice(p.Name, pm.PrintersInTheJsonFile.PrinterBlacklist){
 			currentPrinters = append(currentPrinters, p)
 		}
 	}
 
 	// Update what we know.
 	pm.printers.Refresh(currentPrinters)
+    pm.hashCodeJsonFileOld=pm.hashCodeJsonFileNew
 	log.Infof("Finished synchronizing %d printers", len(currentPrinters))
-
+    
 	return nil
 }
 
@@ -453,4 +491,19 @@ func (pm *PrinterManager) GetJobStats() (uint, uint, uint, error) {
 	defer pm.jobStatsMutex.Unlock()
 
 	return pm.jobsDone, pm.jobsError, processing, nil
+}
+
+func computeMd5(filePath string) ([]byte){
+	var result []byte 
+	var err error
+	file, err := os.Open(filePath)
+	if err != nil {
+		return result
+	}
+	defer file.Close()
+	hash:=md5.New()
+	if _, err := io.Copy(hash,file); err != nil {
+		return result
+	}
+	return hash.Sum(result)
 }

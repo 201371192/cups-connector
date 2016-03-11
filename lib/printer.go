@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"regexp"
-
+ 
 	"github.com/google/cups-connector/cdd"
 )
 
@@ -68,6 +68,10 @@ const (
 	NoChangeToPrinter
 )
 
+
+
+
+
 // Describes changes to be pushed to a GCP printer.
 type PrinterDiff struct {
 	Operation PrinterDiffOperation
@@ -99,15 +103,22 @@ func printerSliceToMapByName(s []Printer) map[string]Printer {
 
 // DiffPrinters returns the diff between old (GCP) and new (native) printers.
 // Returns nil if zero printers or if all diffs are NoChangeToPrinter operation.
-func DiffPrinters(nativePrinters, gcpPrinters []Printer) []PrinterDiff {
+func DiffPrinters(nativePrinters, gcpPrinters []Printer, blacklistedPrinters []string, gcpPrintersInTheCloudCurrently []Printer) []PrinterDiff {
 	// So far, no changes.
 	dirty := false
-
+    
 	diffs := make([]PrinterDiff, 0, 1)
 	printersConsidered := make(map[string]struct{}, len(nativePrinters))
 	nativePrintersByName := printerSliceToMapByName(nativePrinters)
 
+    for i := range gcpPrintersInTheCloudCurrently{
+       if  StringInSlice(gcpPrintersInTheCloudCurrently[i].Name, blacklistedPrinters) {
+			diffs = append(diffs, PrinterDiff{Operation: DeletePrinter, Printer: gcpPrintersInTheCloudCurrently[i]})
+			dirty = true
+		    }
+    }
 	for i := range gcpPrinters {
+    
 		if _, exists := printersConsidered[gcpPrinters[i].Name]; exists {
 			// GCP can have multiple printers with one name. Remove dupes.
 			diffs = append(diffs, PrinterDiff{Operation: DeletePrinter, Printer: gcpPrinters[i]})
@@ -137,11 +148,12 @@ func DiffPrinters(nativePrinters, gcpPrinters []Printer) []PrinterDiff {
 	}
 
 	for i := range nativePrinters {
-		if _, exists := printersConsidered[nativePrinters[i].Name]; !exists {
+		if _, exists := printersConsidered[nativePrinters[i].Name]; !exists && !StringInSlice(nativePrinters[i].Name, blacklistedPrinters) {
 			diffs = append(diffs, PrinterDiff{Operation: RegisterPrinter, Printer: nativePrinters[i]})
 			dirty = true
 		}
 	}
+
 
 	if dirty {
 		return diffs
@@ -255,4 +267,12 @@ func PrinterIsClass(printer Printer) bool {
 		return true
 	}
 	return false
+}
+func StringInSlice(a string, list []string) bool {
+    for _, b := range list {
+        if b == a {
+            return true
+        }
+    }
+    return false
 }

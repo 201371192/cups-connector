@@ -431,7 +431,7 @@ func (ws *WinSpool) GetPrinters() ([]lib.Printer, error) {
 		printers = append(printers, printer)
 	}
 
-	printers = ws.filterBlacklistPrinters(printers)
+	// printers = ws.filterBlacklistPrinters(printers) do not filter blacklisted printers out yet
 	printers = addStaticDescriptionToPrinters(printers)
 	printers = ws.addSystemTagsToPrinters(printers)
 
@@ -562,7 +562,7 @@ func convertJobState(wsStatus uint32) *cdd.JobState {
 
 	} else {
 		// Don't know what is going on. Get the job out of our queue.
-		state.Type = cdd.JobStateAborted
+		state.Type = cdd.JobStateDone
 		state.DeviceActionCause = &cdd.DeviceActionCause{cdd.DeviceActionCauseOther}
 	}
 

@@ -202,7 +202,7 @@ func (c *CUPS) GetPrinters() ([]lib.Printer, error) {
 	if err != nil {
 		return nil, err
 	}
-
+   
 	// cupsDoRequest() returns ipp_t pointer which needs explicit free.
 	defer C.ippDelete(response)
 
@@ -213,6 +213,8 @@ func (c *CUPS) GetPrinters() ([]lib.Printer, error) {
 
 	printers := c.responseToPrinters(response)
 	printers = c.filterBlacklistPrinters(printers)
+ 
+    
 	if c.ignoreRawPrinters {
 		printers = filterRawPrinters(printers)
 	}
