@@ -12,10 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+    
+    "time"
+ 
 	"runtime"
 	"strconv"
 	"strings"
-
+    "net"
 	"github.com/google/cups-connector/cdd"
 	"github.com/google/cups-connector/lib"
 )
@@ -45,6 +48,7 @@ type WinSpool struct {
 	displayNamePrefix     string
 	systemTags            map[string]string
 	printerBlacklist      map[string]interface{}
+  
 }
 
 func NewWinSpool(prefixJobIDToJobTitle bool, displayNamePrefix string, printerBlacklist []string) (*WinSpool, error) {
@@ -64,6 +68,7 @@ func NewWinSpool(prefixJobIDToJobTitle bool, displayNamePrefix string, printerBl
 		systemTags:            systemTags,
 		printerBlacklist:      pb,
 	}
+    
 	return &ws, nil
 }
 
@@ -562,12 +567,90 @@ func convertJobState(wsStatus uint32) *cdd.JobState {
 
 	} else {
 		// Don't know what is going on. Get the job out of our queue.
-		state.Type = cdd.JobStateDone
+		state.Type = cdd.JobStateAborted
 		state.DeviceActionCause = &cdd.DeviceActionCause{cdd.DeviceActionCauseOther}
 	}
 
 	return &state
 }
+func (ws *WinSpool) GetPortName(PrinterName string) ( string, error){
+    pi2s, err := EnumPrinters2()
+
+	portName:=""
+	for _, pi2 := range pi2s {
+        portName=pi2.GetPortName()
+        if(strings.Contains(portName,".") && !strings.Contains(portName,".pdf")){
+           fmt.Print("comparing printerName:" + pi2.GetPrinterName()+ "with printerName: "+ PrinterName + "\n" )
+		    if(pi2.GetPrinterName()==PrinterName){
+                portName=strings.Split(portName, "_")[0]
+                return portName, err
+            }
+        }
+    }
+    return "NoIp", err
+    
+}
+//get jobb state pjl
+func (ws *WinSpool) GetJobStatePJLQuery(fileName string, PrinterName string, portName string) (*cdd.PrintJobStateDiff, error) {
+	reply := make([]byte, 512)
+    k:=0
+    fmt.Print("Reading from port: "+ portName + "")
+ 
+    conn, _ := net.Dial("tcp",portName+":9100")
+    message := "\x1B%-12345X@PJL USTATUS JOB=ON \r\n\x1B%-12345X\r\n"
+    conn.Write([]byte(message))
+	for {   
+        k++
+          //listen for reply
+        conn.Read(reply)
+        fmt.Print(string(reply)+"file :"+ fileName+"reply number: ", k)   
+
+        if(strings.Contains(string(reply), "END") && strings.Contains(string(reply),fileName) || strings.Contains(string(reply), "END") && strings.Contains(string(reply),"LAST") ){
+           if conn!=nil{
+             message := "\x1B%-12345X@PJL USTATUS JOB=OFF \r\n\x1B%-12345X\r\n"
+             conn.Write([]byte(message))
+               conn.Close()
+           
+               fmt.Print("Closed Connection")
+               
+                jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+               return &jobState, nil
+           }
+            break;
+        }
+        time.Sleep(100 * time.Millisecond)
+     
+        
+     }     
+   jobState := cdd.PrintJobStateDiff{
+				State: &cdd.JobState{
+					Type:              cdd.JobStateAborted,
+					DeviceActionCause: &cdd.DeviceActionCause{cdd.DeviceActionCauseOther},
+				},
+			}
+			return &jobState, nil
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // GetJobState gets the current state of the job indicated by jobID.
 func (ws *WinSpool) GetJobState(printerName string, jobID uint32) (*cdd.PrintJobStateDiff, error) {
@@ -729,10 +812,12 @@ func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 	defer pPage.Unref()
 
 	if err := c.hPrinter.DocumentPropertiesSet(printerName, c.devMode); err != nil {
-		return err
+		  fmt.Printf("sucessful found 1. error \n")
+        return err
 	}
 
 	if err := c.hDC.ResetDC(c.devMode); err != nil {
+         fmt.Printf("sucessful found 2. error \n")
 		return err
 	}
 
@@ -743,18 +828,22 @@ func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 	yMarginPixels := c.hDC.GetDeviceCaps(PHYSICALOFFSETY)
 	xform := NewXFORM(float32(xDPI)/72, float32(yDPI)/72, float32(-xMarginPixels), float32(-yMarginPixels))
 	if err := c.hDC.SetGraphicsMode(GM_ADVANCED); err != nil {
+         fmt.Printf("sucessful found 3. error \n")
 		return err
 	}
 	if err := c.hDC.SetWorldTransform(xform); err != nil {
+         fmt.Printf("sucessful found 4. error \n")
 		return err
 	}
 
 	if err := c.hDC.StartPage(); err != nil {
+         fmt.Printf("sucessful found 5. error \n")
 		return err
 	}
 	defer c.hDC.EndPage()
 
 	if err := c.cContext.Save(); err != nil {
+         fmt.Printf("sucessful found 6. error \n")
 		return err
 	}
 
@@ -765,27 +854,33 @@ func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 
 	wDocPoints, hDocPoints, err := pPage.GetSize()
 	if err != nil {
+         fmt.Printf("sucessful found 7. error \n")
 		return err
 	}
 
 	scale, xOffsetPoints, yOffsetPoints := getScaleAndOffset(wDocPoints, hDocPoints, wPaperPixels, hPaperPixels, xMarginPixels, yMarginPixels, wPrintablePixels, hPrintablePixels, xDPI, yDPI, fitToPage)
 
 	if err := c.cContext.IdentityMatrix(); err != nil {
+         fmt.Printf("sucessful found 8. error \n")
 		return err
 	}
 	if err := c.cContext.Translate(xOffsetPoints, yOffsetPoints); err != nil {
+         fmt.Printf("sucessful found 9. error \n")
 		return err
 	}
 	if err := c.cContext.Scale(scale, scale); err != nil {
+         fmt.Printf("sucessful found 10. error \n")
 		return err
 	}
 
 	pPage.RenderForPrinting(c.cContext)
 
 	if err := c.cContext.Restore(); err != nil {
+         fmt.Printf("sucessful found 11. error \n")
 		return err
 	}
 	if err := c.cSurface.ShowPage(); err != nil {
+         fmt.Printf("sucessful found 12. error \n")
 		return err
 	}
 
@@ -816,8 +911,9 @@ var (
 // is returned.
 func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, error) {
 	printer.NativeJobSemaphore.Acquire()
+    fmt.Printf("sucessful acquired \n")
 	defer printer.NativeJobSemaphore.Release()
-
+    fmt.Printf("sucessful released \n")
 	if ws.prefixJobIDToJobTitle {
 		title = fmt.Sprintf("gcp:%s %s", gcpJobID, title)
 	}
@@ -830,11 +926,12 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 	}
 
 	jobContext, err := newJobContext(printer.Name, fileName, title)
-	if err != nil {
+	  fmt.Printf("sucessful got jobcontext \n")
+    if err != nil {
 		return 0, err
 	}
 	defer jobContext.free()
-
+  fmt.Printf("sucessful freed jobcontext \n")
 	if ticket.Print.Color != nil && printer.Description.Color != nil {
 		if color, ok := colorValueByType[ticket.Print.Color.Type]; ok {
 			jobContext.devMode.SetColor(color)
@@ -895,8 +992,9 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 			jobContext.devMode.SetCollate(DMCOLLATE_FALSE)
 		}
 	}
-
+  fmt.Printf("sucessful got to getnPages \n")
 	for i := 0; i < jobContext.pDoc.GetNPages(); i++ {
+       
 		if err := printPage(printer.Name, i, jobContext, fitToPage); err != nil {
 			return 0, err
 		}
@@ -909,3 +1007,4 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 
 func (ws *WinSpool) Quit()                              {}
 func (ws *WinSpool) RemoveCachedPPD(printerName string) {}
+

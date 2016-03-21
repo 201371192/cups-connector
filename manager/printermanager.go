@@ -14,8 +14,9 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"sync"
+	
 	"time"
+    "sync"
     "io"
     "io/ioutil"
 	"crypto/md5"
@@ -32,6 +33,8 @@ import (
 type NativePrintSystem interface {
 	GetPrinters() ([]lib.Printer, error)
 	GetJobState(printerName string, jobID uint32) (*cdd.PrintJobStateDiff, error)
+    GetPortName(PrinterName string) ( string, error)
+    GetJobStatePJLQuery(fileName string, printerName string,portName string)(*cdd.PrintJobStateDiff, error)
 	Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, error)
 	RemoveCachedPPD(printerName string)
 }
@@ -45,6 +48,10 @@ type PrintersInJsonFile struct {
 	ProxyName string `json:"proxy_name"`
 	PrinterBlacklist []string `json:"printer_blacklist"`
 	LogLevel string `json:"log_level"`
+}
+type printerQue struct{
+    portName string
+    jobId string
 }
 // Manages state and interactions between the native print system and Google Cloud Print.
 type PrinterManager struct {
@@ -66,7 +73,8 @@ type PrinterManager struct {
 	// finished printing yet. Key is Job ID.
 	jobsInFlightMutex sync.Mutex
 	jobsInFlight      map[string]struct{}
-
+    printerQue         []printerQue
+    MutexCond          sync.Cond
 	nativeJobQueueSize uint
 	jobFullUsername    bool
 	shareScope         string
@@ -101,6 +109,8 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
 	} else {
 		printers = lib.NewConcurrentPrinterMap(nil)
 	}
+  var m sync.Mutex
+  c := sync.NewCond(&m)
 
 	// Construct.
 	pm := PrinterManager{
@@ -118,7 +128,8 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
 
 		jobsInFlightMutex: sync.Mutex{},
 		jobsInFlight:      make(map[string]struct{}),
-
+        printerQue:            []printerQue{}, 
+        MutexCond:                *c,
 		nativeJobQueueSize: nativeJobQueueSize,
 		jobFullUsername:    jobFullUsername,
 		shareScope:         shareScope,
@@ -417,6 +428,21 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 		return
 	}
 
+    
+    portName, err := pm.native.GetPortName(printer.Name)
+    
+    pm.MutexCond.L.Lock()
+    pm.printerQue=Extend(pm.printerQue,portName, jobID)
+    for (stringInSlice(portName,pm.printerQue)) {
+        if(!firstInSlice(portName,jobID,pm.printerQue)){
+             pm.MutexCond.Wait()
+        }else{
+            log.Infof(jobID+"is running")
+            break;
+        }
+   }
+    pm.MutexCond.L.Unlock()
+    log.Infof(portName + "\n")
 	nativeJobID, err := pm.native.Print(&printer, filename, title, user, jobID, ticket)
 	if err != nil {
 		pm.incrementJobsProcessed(false)
@@ -431,17 +457,28 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 			log.ErrorJob(jobID, err)
 		}
 		return
-	}
+	}else{
+        state := cdd.PrintJobStateDiff{
+			State: &cdd.JobState{
+				Type:              cdd.JobStateInProgress,
+			},
+		}
+		if err := updateJob(jobID, &state); err != nil {
+			log.ErrorJob(jobID, err)
+		}
+    }
 
 	log.InfoJobf(jobID, "Submitted as native job %d", nativeJobID)
-
+  
 	var state cdd.PrintJobStateDiff
-
+    
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-
+  
+ 
 	for _ = range ticker.C {
-		nativeState, err := pm.native.GetJobState(printer.Name, nativeJobID)
+    nativeState, err := pm.native.GetJobStatePJLQuery(title, printer.Name,portName)
+	//	nativeState, err := pm.native.GetJobState(printer.Name, nativeJobID)
 		if err != nil {
 			log.WarningJobf(jobID, "Failed to get state of native job %d: %s", nativeJobID, err)
 
@@ -456,6 +493,11 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 				log.ErrorJob(jobID, err)
 			}
 			pm.incrementJobsProcessed(false)
+            pm.MutexCond.L.Lock()
+            pm.printerQue = Remove(pm.printerQue,portName, jobID)
+            pm.MutexCond.L.Unlock()
+            pm.MutexCond.Broadcast()
+			log.InfoJobf(jobID, "State: %s", state.State.Type)
 			return
 		}
 
@@ -464,6 +506,10 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 			if err = updateJob(jobID, &state); err != nil {
 				log.ErrorJob(jobID, err)
 			}
+            pm.MutexCond.L.Lock()
+               pm.printerQue = Remove(pm.printerQue,portName,jobID)
+               pm.MutexCond.L.Unlock()
+               pm.MutexCond.Broadcast()
 			log.InfoJobf(jobID, "State: %s", state.State.Type)
 		}
 
@@ -506,4 +552,57 @@ func computeMd5(filePath string) ([]byte){
 		return result
 	}
 	return hash.Sum(result)
+}
+
+//Extend slice by element
+func Extend(slice []printerQue, element string, jobId string) []printerQue {
+
+    n := len(slice)
+    if n == cap(slice) {
+        // Slice is full; must grow.
+        // We double its size and add 1, so if the size is zero we still grow.
+        newSlice := make([]printerQue, len(slice), 2*len(slice)+1)
+        copy(newSlice, slice)
+        slice = newSlice
+    }
+    slice = slice[0 : n+1]
+    slice[n].portName = element
+    slice[n].jobId = jobId
+    return slice
+}
+
+//stringInSlice finds out if a element exist in slice
+func stringInSlice(a string, list []printerQue) bool {
+    for _, b := range list {
+        if b.portName == a {
+            return true
+        }
+    }
+    return false
+}
+
+//Remove a element from slice
+func  Remove(slice []printerQue, portName string, jobId string) []printerQue {
+    for i, b := range slice {
+        if(b.portName==portName && b.jobId==jobId){
+           printerQue := append(slice[:i], slice[i+1:]...)
+           return printerQue 
+        }
+    }
+    
+   return slice
+}
+
+//firstInSlice finds out if a element is first in slice
+func firstInSlice(portName string,jobId string, list []printerQue ) bool {
+    for _, b := range list {
+        if b.portName == portName {
+            if(b.jobId != jobId){
+            return false
+            }else{
+            return true
+            }
+        }
+    }
+    return false
 }
