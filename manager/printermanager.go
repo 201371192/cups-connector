@@ -429,7 +429,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 	}
 
     
-    portName, err := pm.native.GetPortName(printer.Name)
+    portName, _ := pm.native.GetPortName(printer.Name)
     
     pm.MutexCond.L.Lock()
     pm.printerQue=Extend(pm.printerQue,portName, jobID)
@@ -469,7 +469,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
     }
 
 	log.InfoJobf(jobID, "Submitted as native job %d", nativeJobID)
-  
+    
 	var state cdd.PrintJobStateDiff
     
 	ticker := time.NewTicker(time.Second)
@@ -480,7 +480,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
     nativeState, err := pm.native.GetJobStatePJLQuery(title, printer.Name,portName)
 	//	nativeState, err := pm.native.GetJobState(printer.Name, nativeJobID)
 		if err != nil {
-			log.WarningJobf(jobID, "Failed to get state of native job %d: %s", nativeJobID, err)
+		//	log.WarningJobf(jobID, "Failed to get state of native job %d: %s", nativeJobID, err)
 
 			state = cdd.PrintJobStateDiff{
 				State: &cdd.JobState{

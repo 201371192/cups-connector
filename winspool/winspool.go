@@ -812,12 +812,10 @@ func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 	defer pPage.Unref()
 
 	if err := c.hPrinter.DocumentPropertiesSet(printerName, c.devMode); err != nil {
-		  fmt.Printf("sucessful found 1. error \n")
         return err
 	}
 
 	if err := c.hDC.ResetDC(c.devMode); err != nil {
-         fmt.Printf("sucessful found 2. error \n")
 		return err
 	}
 
@@ -828,22 +826,20 @@ func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 	yMarginPixels := c.hDC.GetDeviceCaps(PHYSICALOFFSETY)
 	xform := NewXFORM(float32(xDPI)/72, float32(yDPI)/72, float32(-xMarginPixels), float32(-yMarginPixels))
 	if err := c.hDC.SetGraphicsMode(GM_ADVANCED); err != nil {
-         fmt.Printf("sucessful found 3. error \n")
 		return err
 	}
 	if err := c.hDC.SetWorldTransform(xform); err != nil {
-         fmt.Printf("sucessful found 4. error \n")
 		return err
 	}
 
 	if err := c.hDC.StartPage(); err != nil {
-         fmt.Printf("sucessful found 5. error \n")
+        fmt.Print("error with startpage")
 		return err
 	}
 	defer c.hDC.EndPage()
 
 	if err := c.cContext.Save(); err != nil {
-         fmt.Printf("sucessful found 6. error \n")
+          fmt.Print("error with save")
 		return err
 	}
 
@@ -854,33 +850,30 @@ func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 
 	wDocPoints, hDocPoints, err := pPage.GetSize()
 	if err != nil {
-         fmt.Printf("sucessful found 7. error \n")
 		return err
 	}
 
 	scale, xOffsetPoints, yOffsetPoints := getScaleAndOffset(wDocPoints, hDocPoints, wPaperPixels, hPaperPixels, xMarginPixels, yMarginPixels, wPrintablePixels, hPrintablePixels, xDPI, yDPI, fitToPage)
 
 	if err := c.cContext.IdentityMatrix(); err != nil {
-         fmt.Printf("sucessful found 8. error \n")
+          fmt.Print("error with identity")
 		return err
 	}
 	if err := c.cContext.Translate(xOffsetPoints, yOffsetPoints); err != nil {
-         fmt.Printf("sucessful found 9. error \n")
+          fmt.Print("error with translate")
 		return err
 	}
 	if err := c.cContext.Scale(scale, scale); err != nil {
-         fmt.Printf("sucessful found 10. error \n")
+          fmt.Print("error with scale")
 		return err
 	}
 
 	pPage.RenderForPrinting(c.cContext)
 
 	if err := c.cContext.Restore(); err != nil {
-         fmt.Printf("sucessful found 11. error \n")
 		return err
 	}
 	if err := c.cSurface.ShowPage(); err != nil {
-         fmt.Printf("sucessful found 12. error \n")
 		return err
 	}
 
@@ -911,9 +904,7 @@ var (
 // is returned.
 func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, error) {
 	printer.NativeJobSemaphore.Acquire()
-    fmt.Printf("sucessful acquired \n")
 	defer printer.NativeJobSemaphore.Release()
-    fmt.Printf("sucessful released \n")
 	if ws.prefixJobIDToJobTitle {
 		title = fmt.Sprintf("gcp:%s %s", gcpJobID, title)
 	}
@@ -926,12 +917,10 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 	}
 
 	jobContext, err := newJobContext(printer.Name, fileName, title)
-	  fmt.Printf("sucessful got jobcontext \n")
     if err != nil {
 		return 0, err
 	}
 	defer jobContext.free()
-  fmt.Printf("sucessful freed jobcontext \n")
 	if ticket.Print.Color != nil && printer.Description.Color != nil {
 		if color, ok := colorValueByType[ticket.Print.Color.Type]; ok {
 			jobContext.devMode.SetColor(color)
@@ -992,7 +981,6 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 			jobContext.devMode.SetCollate(DMCOLLATE_FALSE)
 		}
 	}
-  fmt.Printf("sucessful got to getnPages \n")
 	for i := 0; i < jobContext.pDoc.GetNPages(); i++ {
        
 		if err := printPage(printer.Name, i, jobContext, fitToPage); err != nil {
