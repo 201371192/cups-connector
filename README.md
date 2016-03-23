@@ -1,9 +1,14 @@
 # Google Cloud Print Connector
 
 ## Introduction
-Share printers from your Windows, Linux, or OS X computer with ChromeOS and Android devices, using the Cloud Print Connector. The Connector is a purpose-built system process. It can share hundreds of printers on a powerful server, or one printer on a Raspberry Pi.
+Share printers from your Windows, Linux, FreeBSD or OS X computer with ChromeOS and Android devices, using the Cloud Print Connector. The Connector is a purpose-built system process. It can share hundreds of printers on a powerful server, or one printer on a Raspberry Pi.
 
 Lots of help can be found in [the wiki](https://github.com/google/cups-connector/wiki).
+
+## Build Status
+* Linux/OSX: [![Build Status](https://travis-ci.org/google/cups-connector.svg?branch=master)](https://travis-ci.org/google/cups-connector)
+
+* FreeBSD: [![Build Status](http://jenkins.mouf.net/job/cups-connector/badge/icon)](http://jenkins.mouf.net/job/cups-connector/)
 
 ## License
 Copyright 2015 Google Inc. All rights reserved.
