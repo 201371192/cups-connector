@@ -95,6 +95,8 @@ type Config struct {
 
 	// Least severity to log.
 	LogLevel string `json:"log_level"`
+    // printerPjlCapabilities
+    PrinterPjl []printerPjl `json:"printer_pjl"`
 }
 
 // DefaultConfig represents reasonable default values for Config fields.
@@ -125,8 +127,16 @@ var DefaultConfig = Config{
 	LocalPrintingEnable: true,
 	CloudPrintingEnable: false,
 	LogLevel:            "INFO",
+    PrinterPjl: []printerPjl{
+        
+    },
 }
 
+type printerPjl struct {
+    PjlEnabled bool `json:"pjl_enabled"`
+    PjlCapable int `json:"pjl_capable"`         // 0 for not possible 1 for possible 2 to run test
+    PrinterName string `json:"printer_name"`
+}
 // getConfigFilename gets the absolute filename of the config file specified by
 // the ConfigFilename flag, and whether it exists.
 //

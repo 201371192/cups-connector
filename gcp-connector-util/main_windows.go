@@ -218,7 +218,7 @@ func createCloudConfig(context *cli.Context, xmppJID, robotRefreshToken, userRef
 		GCPOAuthAuthURL:           lib.DefaultConfig.GCPOAuthAuthURL,
 		GCPOAuthTokenURL:          lib.DefaultConfig.GCPOAuthTokenURL,
 		GCPMaxConcurrentDownloads: uint(context.Int("gcp-max-concurrent-downloads")),
-
+        PrinterPjl:                lib.DefaultConfig.PrinterPjl,
 		NativeJobQueueSize:        uint(context.Int("native-job-queue-size")),
 		NativePrinterPollInterval: context.String("native-printer-poll-interval"),
 		PrefixJobIDToJobTitle:     lib.PointerToBool(context.Bool("prefix-job-id-to-job-title")),

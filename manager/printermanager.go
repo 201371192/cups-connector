@@ -34,8 +34,9 @@ type NativePrintSystem interface {
 	GetPrinters() ([]lib.Printer, error)
 	GetJobState(printerName string, jobID uint32) (*cdd.PrintJobStateDiff, error)
     GetPortName(PrinterName string) ( string, error)
-    GetJobStatePJLQuery(fileName string, printerName string,portName string)(*cdd.PrintJobStateDiff, error)
-	Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, error)
+    GetJobStatePJLQuery(fileName string, printerName string,portName string, jobID uint32, totalPages int)(*cdd.PrintJobStateDiff, error)
+    TestPrintPjlStateCapabilities(fileName string, PrinterName string, portName string, jobID uint32, totalPages int) (*cdd.PrintJobStateDiff, error, int)
+	Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, int, error)
 	RemoveCachedPPD(printerName string)
 }
 type PrintersInJsonFile struct {
@@ -48,10 +49,16 @@ type PrintersInJsonFile struct {
 	ProxyName string `json:"proxy_name"`
 	PrinterBlacklist []string `json:"printer_blacklist"`
 	LogLevel string `json:"log_level"`
+    PrintersPjl []printerPjl `json:"printer_pjl"`
 }
 type printerQue struct{
     portName string
     jobId string
+}
+type printerPjl struct {
+    PjlEnabled bool `json:"pjl_enabled"`
+    PjlCapable int `json:"pjl_capable"`         // 0 for not possible 1 for possible 2 to run test
+    PrinterName string `json:"printer_name"`
 }
 // Manages state and interactions between the native print system and Google Cloud Print.
 type PrinterManager struct {
@@ -75,6 +82,7 @@ type PrinterManager struct {
 	jobsInFlight      map[string]struct{}
     printerQue         []printerQue
     MutexCond          sync.Cond
+    pjlMutex           sync.Mutex
 	nativeJobQueueSize uint
 	jobFullUsername    bool
 	shareScope         string
@@ -125,7 +133,7 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
 		jobsError:     0,
 
         PrintersInTheJsonFile: conf,
-
+        pjlMutex:           sync.Mutex{},
 		jobsInFlightMutex: sync.Mutex{},
 		jobsInFlight:      make(map[string]struct{}),
         printerQue:            []printerQue{}, 
@@ -204,6 +212,7 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
     if err != nil {
 		return fmt.Errorf("Sync failed while calling GetPrinters(): %s", err)
 	}
+ 
     if (reflect.DeepEqual(pm.hashCodeJsonFileNew, pm.hashCodeJsonFileOld)==false){
     file, err := ioutil.ReadFile("gcp-windows-connector.config.json")
      
@@ -248,11 +257,41 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 	// Update what we know.
 	pm.printers.Refresh(currentPrinters)
     pm.hashCodeJsonFileOld=pm.hashCodeJsonFileNew
+    
+    b, err := json.MarshalIndent(pm.PrintersInTheJsonFile,"","")
+     if(err!=nil){
+         return fmt.Errorf("failed to marshal pm.PrintersInTheJsonFile: %s",err)
+     }
+   if err = ioutil.WriteFile("gcp-windows-connector.config.json", b, 0600); err != nil {
+		  return fmt.Errorf("failed to write to jsonfile: %s",err)
+	}
 	log.Infof("Finished synchronizing %d printers", len(currentPrinters))
     
 	return nil
 }
-
+func printerNameInSlice(a string, list []printerPjl) bool {
+    for _, b := range list {
+        if b.PrinterName == a {
+            return true
+        }
+    }
+    return false
+}
+func (pm *PrinterManager) extendPrinterPjl(element printerPjl) []printerPjl {
+   
+    slice:=pm.PrintersInTheJsonFile.PrintersPjl
+    n := len(slice)
+    if n == cap(slice) {
+        // Slice is full; must grow.
+        // We double its size and add 1, so if the size is zero we still grow.
+        newSlice := make([]printerPjl, len(slice), 2*len(slice)+1)
+        copy(newSlice, slice)
+        slice = newSlice
+    }
+    slice = slice[0 : n+1]
+    slice[n] = element
+    return slice
+}
 func (pm *PrinterManager) applyDiff(diff *lib.PrinterDiff, ch chan<- lib.Printer, ignorePrivet bool) {
 	switch diff.Operation {
 	case lib.RegisterPrinter:
@@ -262,6 +301,13 @@ func (pm *PrinterManager) applyDiff(diff *lib.PrinterDiff, ch chan<- lib.Printer
 				break
 			}
 			log.InfoPrinterf(diff.Printer.Name+" "+diff.Printer.GCPID, "Registered in the cloud")
+            if(printerNameInSlice(diff.Printer.Name,pm.PrintersInTheJsonFile.PrintersPjl)){
+                log.InfoPrinterf(diff.Printer.Name,"found in jsonfile")
+            }else{
+                pm.pjlMutex.Lock()
+                pm.PrintersInTheJsonFile.PrintersPjl=pm.extendPrinterPjl(printerPjl{PjlEnabled:true,PjlCapable:2,PrinterName:diff.Printer.Name})
+                pm.pjlMutex.Unlock()
+          }
 
 			if pm.gcp.CanShare() {
 				if err := pm.gcp.Share(diff.Printer.GCPID, pm.shareScope, gcp.User, true, false); err != nil {
@@ -345,6 +391,12 @@ func (pm *PrinterManager) listenNotifications(jobs <-chan *lib.Job, xmppMessages
 
 			case job := <-jobs:
 				log.DebugJobf(job.JobID, "Received job: %+v", job)
+                pm.hashCodeJsonFileNew = computeMd5("gcp-windows-connector.config.json")
+                if (reflect.DeepEqual(pm.hashCodeJsonFileNew, pm.hashCodeJsonFileOld)==false){
+                file, _ := ioutil.ReadFile("gcp-windows-connector.config.json")
+                json.Unmarshal(file,&pm.PrintersInTheJsonFile)
+                pm.hashCodeJsonFileOld = pm.hashCodeJsonFileNew
+             }
 				go pm.printJob(job.NativePrinterName, job.Filename, job.Title, job.User, job.JobID, job.Ticket, job.UpdateJob)
 
 			case notification := <-xmppMessages:
@@ -427,10 +479,17 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 		}
 		return
 	}
-
-    
+    pjlEnabled:=false
+    pjlCapable:=0
+    pjlPrinter:=0
     portName, _ := pm.native.GetPortName(printer.Name)
-    
+    for i, k := range pm.PrintersInTheJsonFile.PrintersPjl{
+        if (k.PrinterName==nativePrinterName) {
+            pjlEnabled=k.PjlEnabled
+            pjlCapable=k.PjlCapable
+            pjlPrinter=i
+        }
+    }
     pm.MutexCond.L.Lock()
     pm.printerQue=Extend(pm.printerQue,portName, jobID)
     for (stringInSlice(portName,pm.printerQue)) {
@@ -443,7 +502,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
    }
     pm.MutexCond.L.Unlock()
     log.Infof(portName + "\n")
-	nativeJobID, err := pm.native.Print(&printer, filename, title, user, jobID, ticket)
+	nativeJobID, TotalPages, err  := pm.native.Print(&printer, filename, title, user, jobID, ticket)
 	if err != nil {
 		pm.incrementJobsProcessed(false)
 		log.ErrorJobf(jobID, "Failed to submit to native print system: %s", err)
@@ -468,17 +527,40 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 		}
     }
 
-	log.InfoJobf(jobID, "Submitted as native job %d", nativeJobID)
+	log.InfoJobf(jobID, "Submitted as native job %d + size of job is %d", nativeJobID, TotalPages)
     
 	var state cdd.PrintJobStateDiff
     
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
   
- 
+    
 	for _ = range ticker.C {
-    nativeState, err := pm.native.GetJobStatePJLQuery(title, printer.Name,portName)
-	//	nativeState, err := pm.native.GetJobState(printer.Name, nativeJobID)
+      nativeState:= &cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateAborted}}
+        if(pjlEnabled && pjlCapable==1){
+                nativeState, err = pm.native.GetJobStatePJLQuery(title, printer.Name,portName,nativeJobID, TotalPages)
+               // nativeState, err = pm.native.GetJobState(printer.Name, nativeJobID)
+        }else if (pjlEnabled && pjlCapable==2){
+             nativeState, err,pjlCapable = pm.native.TestPrintPjlStateCapabilities(title, printer.Name,portName,nativeJobID, TotalPages)
+             if(pjlCapable!=2){
+                pm.pjlMutex.Lock()
+               pm.PrintersInTheJsonFile.PrintersPjl[pjlPrinter].PjlCapable=pjlCapable
+               b, err := json.MarshalIndent(pm.PrintersInTheJsonFile,"","")
+              if(err!=nil){
+                    return 
+              }
+              if err = ioutil.WriteFile("gcp-windows-connector.config.json", b, 0600); err != nil {
+		     return 
+	        }
+            
+                pm.pjlMutex.Unlock()
+             }
+        }else{
+         nativeState = &cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+         
+        }
+
+
 		if err != nil {
 		//	log.WarningJobf(jobID, "Failed to get state of native job %d: %s", nativeJobID, err)
 

@@ -205,6 +205,9 @@ func (c *Config) commonBackfill(configMap map[string]interface{}) *Config {
 	if _, exists := configMap["log_level"]; !exists {
 		b.LogLevel = DefaultConfig.LogLevel
 	}
+    if _, exists := configMap["printer_pjl"]; !exists {
+		b.PrinterPjl = DefaultConfig.PrinterPjl
+	}
 
 	return &b
 }

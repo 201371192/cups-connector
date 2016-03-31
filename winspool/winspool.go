@@ -12,11 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-    
+    "strconv"
     "time"
  
 	"runtime"
-	"strconv"
+	
 	"strings"
     "net"
 	"github.com/google/cups-connector/cdd"
@@ -590,20 +590,183 @@ func (ws *WinSpool) GetPortName(PrinterName string) ( string, error){
     return "NoIp", err
     
 }
-//get jobb state pjl
-func (ws *WinSpool) GetJobStatePJLQuery(fileName string, PrinterName string, portName string) (*cdd.PrintJobStateDiff, error) {
-	reply := make([]byte, 512)
+
+func (ws *WinSpool) TestPrintPjlStateCapabilities(fileName string, PrinterName string, portName string, jobID uint32, totalPages int) (*cdd.PrintJobStateDiff, error, int) {
+
+    TimeoutFromServer:=0
+    TimeoutFromConnector:=0
     k:=0
     fmt.Print("Reading from port: "+ portName + "")
  
-    conn, _ := net.Dial("tcp",portName+":9100")
-    message := "\x1B%-12345X@PJL USTATUS JOB=ON \r\n\x1B%-12345X\r\n"
+ 
+ 
+    conn, err := net.Dial("tcp",portName+":9100")
+    if(err!=nil){
+        fmt.Print("Wrong ip or port used")
+       jobState := cdd.PrintJobStateDiff{
+				State: &cdd.JobState{
+					Type:              cdd.JobStateAborted,
+					DeviceActionCause: &cdd.DeviceActionCause{cdd.DeviceActionCauseOther},
+				},
+			} 
+            return &jobState, nil, 2
+    }
+      message := "\x1B%-12345X@PJL USTATUS JOB=ON \r\n\x1B%-12345X\r\n"
+ //// time to make a timeout client side
+ ch := make(chan []byte)
+ eCh := make(chan error)
+    go func(ch chan []byte, eCh chan error) {
+  for {
+      fmt.Printf("print data in go func \n")
+    // try to read the data
+    data := make([]byte, 512)
+    _,err := conn.Read(data)
+    if err != nil {
+          fmt.Print("Timeout Detected trying to reconnect to printer")
+            conn.Close()
+            conn, _ = net.Dial("tcp",portName+":9100")
+            conn.Write([]byte(message))
+      // send an error if it's encountered
+      eCh<- err
+    }
+    // send data if we read some.
+    ch<- data
+  }
+}(ch, eCh)
+
+ticker := time.Tick(time.Second*10+time.Second*time.Duration(totalPages)*2)
+
     conn.Write([]byte(message))
-	for {   
-        k++
-          //listen for reply
-        conn.Read(reply)
-        fmt.Print(string(reply)+"file :"+ fileName+"reply number: ", k)   
+// continuously read from the connection
+for {
+  select {
+     // This case means we recieved data on the connection
+     case reply := <-ch:
+     k++
+          fmt.Print(string(reply)+"file :"+ fileName+"reply number: ", k)   
+
+        if(strings.Contains(string(reply), "END") && strings.Contains(string(reply),fileName) || strings.Contains(string(reply), "END") && strings.Contains(string(reply),"LAST") ){
+           if conn!=nil{
+             message := "\x1B%-12345X@PJL USTATUS JOB=OFF \r\n\x1B%-12345X\r\n"
+             conn.Write([]byte(message))
+               conn.Close()
+           
+               fmt.Print("Closed Connection")
+               
+                jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+               return &jobState, nil, 1
+           }
+            break;
+        }
+       // Do something with the data
+     // This case means we got an error and the goroutine has finished
+     case err := <-eCh:
+       if(err!=nil){
+          
+            TimeoutFromServer++
+            if(TimeoutFromServer==5){
+                fmt.Printf("Timeout from server \n")
+               jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+               return &jobState, nil, 0
+            }
+        }
+       // handle our error then exit for loop
+       break;
+     // This will timeout on the read.
+     case <-ticker:
+      TimeoutFromConnector++
+      if(TimeoutFromConnector==5){
+          fmt.Printf("Timeout from connector")
+          jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+               return &jobState, nil, 0
+      }
+  }
+}
+  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//get jobb state pjl
+func (ws *WinSpool) GetJobStatePJLQuery(fileName string, PrinterName string, portName string, jobID uint32, totalPages int) (*cdd.PrintJobStateDiff, error) {
+ 
+    k:=0
+  
+ 	/*hPrinter, err := OpenPrinter(PrinterName)
+	if err != nil {
+		return nil, err
+	}
+	ji1, err := hPrinter.GetJob(int32(jobID))
+    	if err != nil {
+		return nil, err
+	}
+    fmt.Printf("Job total pages printed %v",ji1.GetTotalPages() )
+ */
+ 
+     TimeoutFromServer:=0
+    TimeoutFromConnector:=0
+  
+    fmt.Print("Reading from port: "+ portName + "")
+ 
+ 
+ 
+    conn, err := net.Dial("tcp",portName+":9100")
+    if(err!=nil){
+        fmt.Print("Wrong ip or port used")
+       jobState := cdd.PrintJobStateDiff{
+				State: &cdd.JobState{
+					Type:              cdd.JobStateAborted,
+					DeviceActionCause: &cdd.DeviceActionCause{cdd.DeviceActionCauseOther},
+				},
+			} 
+            return &jobState, nil
+    }
+      message := "\x1B%-12345X@PJL USTATUS JOB=ON \r\n\x1B%-12345X\r\n"
+ //// time to make a timeout client side
+ ch := make(chan []byte)
+ eCh := make(chan error)
+    go func(ch chan []byte, eCh chan error) {
+  for {
+      fmt.Printf("print data in go func \n")
+    // try to read the data
+    data := make([]byte, 512)
+    _,err := conn.Read(data)
+    if err != nil {
+          fmt.Print("Timeout Detected trying to reconnect to printer")
+            conn.Close()
+            conn, _ = net.Dial("tcp",portName+":9100")
+            conn.Write([]byte(message))
+      // send an error if it's encountered
+      eCh<- err
+    }
+    // send data if we read some.
+    ch<- data
+  }
+}(ch, eCh)
+
+ticker := time.Tick(time.Second*10+time.Second*time.Duration(totalPages)*2)
+
+    conn.Write([]byte(message))
+// continuously read from the connection
+for {
+  select {
+     // This case means we recieved data on the connection
+     case reply := <-ch:
+     k++
+          fmt.Print(string(reply)+"file :"+ fileName+"reply number: ", k)   
 
         if(strings.Contains(string(reply), "END") && strings.Contains(string(reply),fileName) || strings.Contains(string(reply), "END") && strings.Contains(string(reply),"LAST") ){
            if conn!=nil{
@@ -618,17 +781,34 @@ func (ws *WinSpool) GetJobStatePJLQuery(fileName string, PrinterName string, por
            }
             break;
         }
-        time.Sleep(100 * time.Millisecond)
-     
-        
-     }     
-   jobState := cdd.PrintJobStateDiff{
-				State: &cdd.JobState{
-					Type:              cdd.JobStateAborted,
-					DeviceActionCause: &cdd.DeviceActionCause{cdd.DeviceActionCauseOther},
-				},
-			}
-			return &jobState, nil
+       // Do something with the data
+     // This case means we got an error and the goroutine has finished
+     case err := <-eCh:
+       if(err!=nil){
+          
+            TimeoutFromServer++
+            if(TimeoutFromServer==5){
+               conn.Write([]byte(message))
+               conn.Close()
+               fmt.Print("Closed Connection")
+               jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+               return &jobState, nil
+            }
+        }
+       // handle our error then exit for loop
+       break;
+     // This will timeout on the read.
+     case <-ticker:
+      TimeoutFromConnector++
+      if(TimeoutFromConnector==5){
+            conn.Write([]byte(message))
+            conn.Close()
+            fmt.Print("Closed Connection")
+            jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+               return &jobState, nil
+      }
+  }
+}
 }
 
 
@@ -660,6 +840,9 @@ func (ws *WinSpool) GetJobState(printerName string, jobID uint32) (*cdd.PrintJob
 	}
 
 	ji1, err := hPrinter.GetJob(int32(jobID))
+
+   // strconv.FormatUint(ji1.GetTotalPages(),10)
+        fmt.Printf("Job total pages printed %v",ji1.GetTotalPages() )
 	if err != nil {
 		if err == ERROR_INVALID_PARAMETER {
 			jobState := cdd.PrintJobStateDiff{
@@ -676,6 +859,7 @@ func (ws *WinSpool) GetJobState(printerName string, jobID uint32) (*cdd.PrintJob
 	jobState := cdd.PrintJobStateDiff{
 		State: convertJobState(ji1.GetStatus()),
 	}
+    fmt.Print("Job total pages printed %d", ji1.GetTotalPages )
 	return &jobState, nil
 }
 
@@ -902,7 +1086,7 @@ var (
 
 // Print sends a new print job to the specified printer. The job ID
 // is returned.
-func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, error) {
+func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, int, error) {
 	printer.NativeJobSemaphore.Acquire()
 	defer printer.NativeJobSemaphore.Release()
 	if ws.prefixJobIDToJobTitle {
@@ -910,15 +1094,15 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 	}
 
 	if printer == nil {
-		return 0, errors.New("Print() called with nil printer")
+		return 0,0, errors.New("Print() called with nil printer")
 	}
 	if ticket == nil {
-		return 0, errors.New("Print() called with nil ticket")
+		return 0, 0, errors.New("Print() called with nil ticket")
 	}
 
 	jobContext, err := newJobContext(printer.Name, fileName, title)
     if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer jobContext.free()
 	if ticket.Print.Color != nil && printer.Description.Color != nil {
@@ -927,7 +1111,7 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 		} else if ticket.Print.Color.VendorID != "" {
 			v, err := strconv.ParseInt(ticket.Print.Color.VendorID, 10, 16)
 			if err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 			jobContext.devMode.SetColor(int16(v))
 		}
@@ -962,7 +1146,7 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 		if ticket.Print.MediaSize.VendorID != "" {
 			v, err := strconv.ParseInt(ticket.Print.MediaSize.VendorID, 10, 16)
 			if err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 			jobContext.devMode.SetPaperSize(int16(v))
 			jobContext.devMode.ClearPaperLength()
@@ -981,14 +1165,15 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 			jobContext.devMode.SetCollate(DMCOLLATE_FALSE)
 		}
 	}
+   
 	for i := 0; i < jobContext.pDoc.GetNPages(); i++ {
        
 		if err := printPage(printer.Name, i, jobContext, fitToPage); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
 
-	return uint32(jobContext.jobID), nil
+	return uint32(jobContext.jobID), jobContext.pDoc.GetNPages(),  nil
 }
 
 // The following functions are not relevant to Windows printing, but are required by the NativePrintSystem interface.
