@@ -665,21 +665,58 @@ for {
           
             TimeoutFromServer++
             if(TimeoutFromServer==5){
-                fmt.Printf("Timeout from server \n")
-               jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
-               return &jobState, nil, 0
-            }
-        }
-       // handle our error then exit for loop
+               fmt.Printf("Timeout from server \n")
+               hPrinter, err := OpenPrinter(PrinterName)
+	           if err != nil {
+                fmt.Println("greetings from error 1")
+		        return nil, err, 0
+	           }
+               ji1, err := hPrinter.GetJob(int32(jobID))
+	           if err != nil {
+	            if err == ERROR_INVALID_PARAMETER {
+                 fmt.Println("greetings from error 2")
+			     jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+			    
+			    return &jobState, nil, 0
+		      }
+              
+              fmt.Println("greetings from error 3")
+		      return nil, err, 0
+	          jobState := cdd.PrintJobStateDiff{
+		      State: convertJobState(ji1.GetStatus()),
+	         }
+	         return &jobState, nil, 3
+             }
+       }
+ // handle our error then exit for loop
        break;
-     // This will timeout on the read.
+   
+       }
+  // This will timeout on the read.
      case <-ticker:
       TimeoutFromConnector++
       if(TimeoutFromConnector==5){
-          fmt.Printf("Timeout from connector")
-          jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
-               return &jobState, nil, 0
-      }
+               fmt.Printf("Timeout from connector \n")
+               hPrinter, err := OpenPrinter(PrinterName)
+	           if err != nil {
+                fmt.Println("Can not open printer "+  PrinterName)
+		        return nil, err, 0
+	           }
+               ji1, err := hPrinter.GetJob(int32(jobID))
+	           if err != nil {
+	            if err == ERROR_INVALID_PARAMETER {
+                 fmt.Println("State can not be read at all")
+			     jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+			    
+			    return &jobState, nil, 0
+		      }
+		      return nil, err, 0
+	          jobState := cdd.PrintJobStateDiff{
+		      State: convertJobState(ji1.GetStatus()),
+	         }
+	         return &jobState, nil, 3
+             }
+       }
   }
 }
   
@@ -806,32 +843,10 @@ for {
             fmt.Print("Closed Connection")
             jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
                return &jobState, nil
-      }
-  }
+            }
+        }
+    }
 }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // GetJobState gets the current state of the job indicated by jobID.
 func (ws *WinSpool) GetJobState(printerName string, jobID uint32) (*cdd.PrintJobStateDiff, error) {
 	hPrinter, err := OpenPrinter(printerName)
@@ -840,11 +855,9 @@ func (ws *WinSpool) GetJobState(printerName string, jobID uint32) (*cdd.PrintJob
 	}
 
 	ji1, err := hPrinter.GetJob(int32(jobID))
-
-   // strconv.FormatUint(ji1.GetTotalPages(),10)
-        fmt.Printf("Job total pages printed %v",ji1.GetTotalPages() )
 	if err != nil {
 		if err == ERROR_INVALID_PARAMETER {
+             fmt.Println("Either your printer is not online or you have not enabled keep print jobs in queue, if you have not done either of those all i can do is say i have sent the job to the printer")
 			jobState := cdd.PrintJobStateDiff{
 				State: &cdd.JobState{
 					Type:              cdd.JobStateAborted,
@@ -853,13 +866,13 @@ func (ws *WinSpool) GetJobState(printerName string, jobID uint32) (*cdd.PrintJob
 			}
 			return &jobState, nil
 		}
+         
 		return nil, err
 	}
 
 	jobState := cdd.PrintJobStateDiff{
 		State: convertJobState(ji1.GetStatus()),
 	}
-    fmt.Print("Job total pages printed %d", ji1.GetTotalPages )
 	return &jobState, nil
 }
 

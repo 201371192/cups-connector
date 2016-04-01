@@ -556,7 +556,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
                 pm.pjlMutex.Unlock()
              }
         }else if(pjlCapable==3){
-           nativeState,err= pm.native.GetJobState(printer.Name,jobID)
+           nativeState,err= pm.native.GetJobState(printer.Name,nativeJobID)
         }else{
          nativeState = &cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
          
