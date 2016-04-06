@@ -257,8 +257,9 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 	// Update what we know.
 	pm.printers.Refresh(currentPrinters)
     pm.hashCodeJsonFileOld=pm.hashCodeJsonFileNew
-    
+     pm.pjlMutex.Lock()
     b, err := json.MarshalIndent(pm.PrintersInTheJsonFile,"","")
+     pm.pjlMutex.Unlock()
      if(err!=nil){
          return fmt.Errorf("failed to marshal pm.PrintersInTheJsonFile: %s",err)
      }
@@ -291,6 +292,17 @@ func (pm *PrinterManager) extendPrinterPjl(element printerPjl) []printerPjl {
     slice = slice[0 : n+1]
     slice[n] = element
     return slice
+}
+//Remove a element from slice
+func  (pm *PrinterManager) detendPrinterPjl(printerName string) []printerPjl {
+    for i, b := range pm.PrintersInTheJsonFile.PrintersPjl {
+        if(b.PrinterName==printerName){
+           printerQue := append(pm.PrintersInTheJsonFile.PrintersPjl[:i], pm.PrintersInTheJsonFile.PrintersPjl[i+1:]...)
+           return printerQue 
+        }
+    }
+    
+   return pm.PrintersInTheJsonFile.PrintersPjl
 }
 func (pm *PrinterManager) applyDiff(diff *lib.PrinterDiff, ch chan<- lib.Printer, ignorePrivet bool) {
 	switch diff.Operation {
@@ -361,6 +373,9 @@ func (pm *PrinterManager) applyDiff(diff *lib.PrinterDiff, ch chan<- lib.Printer
 				log.ErrorPrinterf(diff.Printer.Name+" "+diff.Printer.GCPID, "Failed to delete from the cloud: %s", err)
 				break
 			}
+             pm.pjlMutex.Lock()
+            pm.detendPrinterPjl(diff.Printer.Name)
+             pm.pjlMutex.Unlock()
 			log.InfoPrinterf(diff.Printer.Name+" "+diff.Printer.GCPID, "Deleted from the cloud")
 		}
 

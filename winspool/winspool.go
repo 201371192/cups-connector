@@ -580,8 +580,7 @@ func (ws *WinSpool) GetPortName(PrinterName string) ( string, error){
 	for _, pi2 := range pi2s {
         portName=pi2.GetPortName()
         if(strings.Contains(portName,".") && !strings.Contains(portName,".pdf")){
-           fmt.Print("comparing printerName:" + pi2.GetPrinterName()+ "with printerName: "+ PrinterName + "\n" )
-		    if(pi2.GetPrinterName()==PrinterName){
+             if(pi2.GetPrinterName()==PrinterName){
                 portName=strings.Split(portName, "_")[0]
                 return portName, err
             }
@@ -615,26 +614,57 @@ func (ws *WinSpool) TestPrintPjlStateCapabilities(fileName string, PrinterName s
  //// time to make a timeout client side
  ch := make(chan []byte)
  eCh := make(chan error)
-    go func(ch chan []byte, eCh chan error) {
+ quitRoutine:= make(chan bool)
+    go func(ch chan []byte, eCh chan error, quitRoutine chan bool) {
   for {
-      fmt.Printf("print data in go func \n")
-    // try to read the data
-    data := make([]byte, 512)
-    _,err := conn.Read(data)
-    if err != nil {
-          fmt.Print("Timeout Detected trying to reconnect to printer")
-            conn.Close()
-            conn, _ = net.Dial("tcp",portName+":9100")
-            conn.Write([]byte(message))
-      // send an error if it's encountered
-      eCh<- err
+      
+      select{
+          case quitRoutineActive:=<- quitRoutine:{
+                      if(quitRoutineActive==true){
+                        fmt.Println("Quit the goroutine")
+                         return
+                      }
+          }
+          default:{
+              fmt.Println("print data in go func")
+              // try to read the data
+              data := make([]byte, 512)
+              _,err := conn.Read(data)
+              if err != nil {
+               fmt.Println("Timeout Detected trying to reconnect to printer")
+               conn.Close()
+               conn, _ = net.Dial("tcp",portName+":9100")
+              conn.Write([]byte(message))
+              // send an error if it's encountered
+              select {
+                  case eCh<- err:
+                  case quitRoutineActive:=<- quitRoutine:{
+                      if(quitRoutineActive==true){
+                        fmt.Println("Quit the goroutine")
+                         return
+                      }
+                 }
+               
+              }
+              
     }
     // send data if we read some.
-    ch<- data
+      select {
+                  case  ch<- data:
+                  case quitRoutineActive:=<- quitRoutine:{
+                      if(quitRoutineActive==true){
+                        fmt.Println("Quit the goroutine")
+                         return
+                  }
+                }  
+                 
+    }  
+}
+      }
   }
-}(ch, eCh)
+    }(ch, eCh, quitRoutine)
 
-ticker := time.Tick(time.Second*10+time.Second*time.Duration(totalPages)*2)
+ticker := time.Tick(time.Second*45+time.Second*time.Duration(totalPages)*2)
 
     conn.Write([]byte(message))
 // continuously read from the connection
@@ -650,11 +680,12 @@ for {
              message := "\x1B%-12345X@PJL USTATUS JOB=OFF \r\n\x1B%-12345X\r\n"
              conn.Write([]byte(message))
                conn.Close()
-           
-               fmt.Print("Closed Connection")
-               
-                jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
-               return &jobState, nil, 1
+         
+            fmt.Print("Closed Connection")
+            quitRoutine <- true
+            fmt.Println("it sent")
+            jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+            return &jobState, nil, 1   
            }
             break;
         }
@@ -668,25 +699,31 @@ for {
                fmt.Printf("Timeout from server \n")
                hPrinter, err := OpenPrinter(PrinterName)
 	           if err != nil {
-                fmt.Println("greetings from error 1")
+                fmt.Println("Can not open printer "+  PrinterName)
+                 quitRoutine<-true
+                  fmt.Println("it sent")
 		        return nil, err, 0
 	           }
                ji1, err := hPrinter.GetJob(int32(jobID))
 	           if err != nil {
 	            if err == ERROR_INVALID_PARAMETER {
-                 fmt.Println("greetings from error 2")
-			     jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
-			    
-			    return &jobState, nil, 0
-		      }
-              
-              fmt.Println("greetings from error 3")
-		      return nil, err, 0
-	          jobState := cdd.PrintJobStateDiff{
-		      State: convertJobState(ji1.GetStatus()),
-	         }
-	         return &jobState, nil, 3
-             }
+                 fmt.Println("State can not be read at all")
+                 quitRoutine <- true
+                 fmt.Println("it sent")
+                 jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+			     return &jobState, nil, 0
+                     
+                    
+		          }
+                    quitRoutine<-true
+               return nil, err, 0
+              }
+                 fmt.Println("attempting to set state")
+                quitRoutine<-true
+                  fmt.Println("it sent")
+	          jobState := cdd.PrintJobStateDiff{State: convertJobState(ji1.GetStatus()),}
+	       return &jobState, nil, 3
+             
        }
  // handle our error then exit for loop
        break;
@@ -699,23 +736,25 @@ for {
                fmt.Printf("Timeout from connector \n")
                hPrinter, err := OpenPrinter(PrinterName)
 	           if err != nil {
-                fmt.Println("Can not open printer "+  PrinterName)
-		        return nil, err, 0
+                fmt.Println("Can not open printer "+  PrinterName )
+		       quitRoutine<-true
+                return nil, err, 0
 	           }
                ji1, err := hPrinter.GetJob(int32(jobID))
 	           if err != nil {
 	            if err == ERROR_INVALID_PARAMETER {
                  fmt.Println("State can not be read at all")
 			     jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
-			    
-			    return &jobState, nil, 0
-		      }
-		      return nil, err, 0
-	          jobState := cdd.PrintJobStateDiff{
-		      State: convertJobState(ji1.GetStatus()),
-	         }
-	         return &jobState, nil, 3
-             }
+			   quitRoutine<-true
+                return &jobState, nil, 0
+		          }
+            quitRoutine<-true
+               return nil, err, 0
+              }
+            quitRoutine<-true
+	          jobState := cdd.PrintJobStateDiff{State: convertJobState(ji1.GetStatus()),}
+	       return &jobState, nil, 3
+             
        }
   }
 }
@@ -771,32 +810,66 @@ func (ws *WinSpool) GetJobStatePJLQuery(fileName string, PrinterName string, por
 			} 
             return &jobState, nil
     }
-      message := "\x1B%-12345X@PJL USTATUS JOB=ON \r\n\x1B%-12345X\r\n"
+      messageJob := "\x1B%-12345X@PJL USTATUS JOB=ON \r\n\x1B%-12345X\r\n"
+      conn.Write([]byte(messageJob))
+      messagePage := "\x1B%-12345X@PJL USTATUS PAGE=ON \r\n\x1B%-12345X\r\n"
+       conn.Write([]byte(messagePage))
  //// time to make a timeout client side
  ch := make(chan []byte)
  eCh := make(chan error)
-    go func(ch chan []byte, eCh chan error) {
+  quitRoutine:= make(chan bool)
+    go func(ch chan []byte, eCh chan error, quitRoutine chan bool) {
   for {
-      fmt.Printf("print data in go func \n")
-    // try to read the data
-    data := make([]byte, 512)
-    _,err := conn.Read(data)
-    if err != nil {
-          fmt.Print("Timeout Detected trying to reconnect to printer")
-            conn.Close()
-            conn, _ = net.Dial("tcp",portName+":9100")
-            conn.Write([]byte(message))
-      // send an error if it's encountered
-      eCh<- err
+      
+      select{
+          case quitRoutineActive:=<- quitRoutine:{
+                      if(quitRoutineActive==true){
+                        fmt.Println("Quit the goroutine")
+                         return
+                      }
+          }
+          default:{
+              fmt.Println("print data in go func")
+              // try to read the data
+              data := make([]byte, 512)
+              _,err := conn.Read(data)
+              if err != nil {
+               fmt.Println("Timeout Detected trying to reconnect to printer")
+               conn.Close()
+               conn, _ = net.Dial("tcp",portName+":9100")
+              conn.Write([]byte(messageJob))
+                     conn.Write([]byte(messagePage))
+              // send an error if it's encountered
+              select {
+                  case eCh<- err:
+                  case quitRoutineActive:=<- quitRoutine:{
+                      if(quitRoutineActive==true){
+                        fmt.Println("Quit the goroutine")
+                         return
+                      }
+                 }
+               
+              }
+              
     }
     // send data if we read some.
-    ch<- data
+      select {
+                  case  ch<- data:
+                  case quitRoutineActive:=<- quitRoutine:{
+                      if(quitRoutineActive==true){
+                        fmt.Println("Quit the goroutine")
+                         return
+                  }
+                }     
+    }  
+}
+      }
   }
-}(ch, eCh)
+    }(ch, eCh, quitRoutine)
 
-ticker := time.Tick(time.Second*10+time.Second*time.Duration(totalPages)*2)
+ticker := time.Tick(time.Second*45+time.Second*time.Duration(totalPages)*2)
 
-    conn.Write([]byte(message))
+    conn.Write([]byte(messageJob))
 // continuously read from the connection
 for {
   select {
@@ -809,10 +882,12 @@ for {
            if conn!=nil{
              message := "\x1B%-12345X@PJL USTATUS JOB=OFF \r\n\x1B%-12345X\r\n"
              conn.Write([]byte(message))
+             messagePageOff:="\x1B%-12345X@PJL USTATUS JOB=OFF \r\n\x1B%-12345X\r\n"
+             conn.Write([]byte(messagePageOff))
                conn.Close()
-           
+            
                fmt.Print("Closed Connection")
-               
+               quitRoutine<-true
                 jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
                return &jobState, nil
            }
@@ -825,9 +900,11 @@ for {
           
             TimeoutFromServer++
             if(TimeoutFromServer==5){
-               conn.Write([]byte(message))
+               conn.Write([]byte(messageJob))
+                      conn.Write([]byte(messagePage))
                conn.Close()
                fmt.Print("Closed Connection")
+                quitRoutine<-true
                jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
                return &jobState, nil
             }
@@ -838,9 +915,11 @@ for {
      case <-ticker:
       TimeoutFromConnector++
       if(TimeoutFromConnector==5){
-            conn.Write([]byte(message))
+            conn.Write([]byte(messageJob))
+                   conn.Write([]byte(messagePage))
             conn.Close()
             fmt.Print("Closed Connection")
+             quitRoutine<-true
             jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
                return &jobState, nil
             }
@@ -869,7 +948,6 @@ func (ws *WinSpool) GetJobState(printerName string, jobID uint32) (*cdd.PrintJob
          
 		return nil, err
 	}
-
 	jobState := cdd.PrintJobStateDiff{
 		State: convertJobState(ji1.GetStatus()),
 	}
