@@ -14,7 +14,9 @@ import (
 	"io/ioutil"
 	"reflect"
 	"runtime"
-
+	"os"
+	"io"
+	"crypto/md5"
 	"github.com/codegangsta/cli"
 )
 
@@ -55,7 +57,6 @@ func GetConfig(context *cli.Context) (*Config, string, error) {
 	if !exists {
 		return &DefaultConfig, "", nil
 	}
-
 	configRaw, err := ioutil.ReadFile(cf)
 	if err != nil {
 		return nil, "", err
@@ -76,6 +77,70 @@ func GetConfig(context *cli.Context) (*Config, string, error) {
 
 	return b, cf, nil
 }
+// same as GetConfig but instead of using the context it uses a filepath
+func GetConfigByString(FilePath string) (*Config, error) {
+	
+	
+	configRaw, err := ioutil.ReadFile(FilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	config := new(Config)
+	if err = json.Unmarshal(configRaw, config); err != nil {
+		return nil, err
+	}
+
+	// Same config as a map so that we can detect missing keys.
+	var configMap map[string]interface{}
+	if err = json.Unmarshal(configRaw, &configMap); err != nil {
+		return nil,err
+	}
+
+	b := config.Backfill(configMap)
+
+	return b, nil
+}
+//gets the config for printermanager this means the printerblacklist and printer capabilities
+func GetConfigPrinterManager(FileName string, hashCodeOld []byte) ([]byte, bool, string) {
+	cf, _ := getConfigFilenameByString(FileName)
+	hashCodeNew:=ComputeMd5(cf)
+	if(reflect.DeepEqual(hashCodeNew,hashCodeOld)){
+		return hashCodeNew, true, cf
+	}
+	return hashCodeOld, false, cf
+}
+
+
+//hashes the file specficed by the filepath to a string to check if the file have been changed
+func ComputeMd5(filePath string) ([]byte){
+	var result []byte 
+	var err error
+	file, err := os.Open(filePath)
+	if err != nil {
+		return result
+	}
+	defer file.Close()
+	hash:=md5.New()
+	if _, err := io.Copy(hash,file); err != nil {
+		return result
+	}
+	return hash.Sum(result)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ToFile writes this Config object to the config file indicated by ConfigFile.
 func (c *Config) ToFile(context *cli.Context) (string, error) {
@@ -85,6 +150,7 @@ func (c *Config) ToFile(context *cli.Context) (string, error) {
 	}
 
 	cf, _ := getConfigFilename(context)
+	
 	if err = ioutil.WriteFile(cf, b, 0600); err != nil {
 		return "", err
 	}

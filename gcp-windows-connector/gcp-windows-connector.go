@@ -73,12 +73,12 @@ func (service *service) Execute(args []string, r <-chan svc.ChangeRequest, s cha
 	if service.interactive {
 		if err := log.Start(true); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to start event log: %s\n", err)
-			return false, 1
+			return false, 2
 		}
 	} else {
 		if err := log.Start(false); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to start event log: %s\n", err)
-			return false, 1
+			return false, 3
 		}
 	}
 	defer log.Stop()
@@ -86,13 +86,13 @@ func (service *service) Execute(args []string, r <-chan svc.ChangeRequest, s cha
 	config, configFilename, err := lib.GetConfig(service.context)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read config file: %s\n", err)
-		return false, 1
+		return false, 4
 	}
 
 	logLevel, ok := log.LevelFromString(config.LogLevel)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Log level %s is not recognized\n", config.LogLevel)
-		return false, 1
+		return false, 5
 	}
 	log.SetLevel(logLevel)
 
@@ -108,10 +108,10 @@ func (service *service) Execute(args []string, r <-chan svc.ChangeRequest, s cha
 
 	if !config.CloudPrintingEnable && !config.LocalPrintingEnable {
 		log.Fatal("Cannot run connector with both local_printing_enable and cloud_printing_enable set to false")
-		return false, 1
+		return false, 6
 	} else if config.LocalPrintingEnable {
 		log.Fatal("Local printing has not been implemented in this version of the Windows connector.")
-		return false, 1
+		return false, 7
 	}
 
 	jobs := make(chan *lib.Job, 10)
@@ -123,12 +123,12 @@ func (service *service) Execute(args []string, r <-chan svc.ChangeRequest, s cha
 		xmppPingTimeout, err := time.ParseDuration(config.XMPPPingTimeout)
 		if err != nil {
 			log.Fatalf("Failed to parse xmpp ping timeout: %s", err)
-			return false, 1
+			return false, 8
 		}
 		xmppPingInterval, err := time.ParseDuration(config.XMPPPingInterval)
 		if err != nil {
 			log.Fatalf("Failed to parse xmpp ping interval default: %s", err)
-			return false, 1
+			return false, 9
 		}
 
 		g, err = gcp.NewGoogleCloudPrint(config.GCPBaseURL, config.RobotRefreshToken,
@@ -137,14 +137,14 @@ func (service *service) Execute(args []string, r <-chan svc.ChangeRequest, s cha
 			config.GCPMaxConcurrentDownloads, jobs)
 		if err != nil {
 			log.Fatal(err)
-			return false, 1
+			return false, 10
 		}
 
 		x, err = xmpp.NewXMPP(config.XMPPJID, config.ProxyName, config.XMPPServer, config.XMPPPort,
 			xmppPingTimeout, xmppPingInterval, g.GetRobotAccessToken, xmppNotifications)
 		if err != nil {
 			log.Fatal(err)
-			return false, 1
+			return false, 11
 		}
 		defer x.Quit()
 	}
@@ -152,19 +152,19 @@ func (service *service) Execute(args []string, r <-chan svc.ChangeRequest, s cha
 	ws, err := winspool.NewWinSpool(*config.PrefixJobIDToJobTitle, config.DisplayNamePrefix, config.PrinterBlacklist)
 	if err != nil {
 		log.Fatal(err)
-		return false, 1
+		return false, 12
 	}
 
 	nativePrinterPollInterval, err := time.ParseDuration(config.NativePrinterPollInterval)
 	if err != nil {
 		log.Fatalf("Failed to parse printer poll interval: %s", err)
-		return false, 1
+		return false, 13
 	}
 	pm, err := manager.NewPrinterManager(ws, g, nil, nativePrinterPollInterval,
 		config.NativeJobQueueSize, false, config.ShareScope, jobs, xmppNotifications)
 	if err != nil {
 		log.Fatal(err)
-		return false, 1
+		return false, 14
 	}
 	defer pm.Quit()
 

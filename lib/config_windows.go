@@ -150,17 +150,21 @@ func getConfigFilename(context *cli.Context) (string, bool) {
 		_, err := os.Stat(cf)
 		return cf, err == nil
 	}
-
+	/*path :=os.Getenv("appdata")+"\\Princh\\PrinchConnectorConfigfile"
+	if _, err := os.Stat(path); err == nil {
+		// File exist in princh appdata
+		return path, true
+	}*/
 	absCF, err := filepath.Abs(cf)
 	if err != nil {
 		// syscall failure; treat as if file doesn't exist.
 		return cf, false
 	}
+	
 	if _, err := os.Stat(absCF); err == nil {
 		// File exists on relative path.
 		return absCF, true
 	}
-
 	// Check for config file on path relative to executable.
 	exeFile := os.Args[0]
 	exeDir := filepath.Dir(exeFile)
@@ -172,6 +176,42 @@ func getConfigFilename(context *cli.Context) (string, bool) {
 	// This is probably what the user expects if it wasn't found anywhere else.
 	return absCF, false
 }
+func getConfigFilenameByString(fileName string) (string, bool) {
+	cf := fileName
+
+	if filepath.IsAbs(cf) {
+		// Absolute path specified; user knows what they want.
+		_, err := os.Stat(cf)
+		return cf, err == nil
+	}
+	/*path :=os.Getenv("appdata")+"\\Princh\\PrinchConnectorConfigfile"
+	if _, err := os.Stat(path); err == nil {
+		// File exist in princh appdata
+		return path, true
+	}*/
+	absCF, err := filepath.Abs(cf)
+	if err != nil {
+		// syscall failure; treat as if file doesn't exist.
+		return cf, false
+	}
+	
+	if _, err := os.Stat(absCF); err == nil {
+		// File exists on relative path.
+		return absCF, true
+	}
+	// Check for config file on path relative to executable.
+	exeFile := os.Args[0]
+	exeDir := filepath.Dir(exeFile)
+	absCF = filepath.Join(exeDir, cf)
+	if _, err := os.Stat(absCF); err == nil {
+		return absCF, true
+	}
+
+	// This is probably what the user expects if it wasn't found anywhere else.
+	return absCF, false
+}
+
+
 
 // Backfill returns a copy of this config with all missing keys set to default values.
 func (c *Config) Backfill(configMap map[string]interface{}) *Config {

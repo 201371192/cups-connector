@@ -114,6 +114,18 @@ func (gcp *GoogleCloudPrint) Control(jobID string, state *cdd.PrintJobStateDiff)
 	return nil
 }
 
+//JobLookUp lookup 
+func (gcp *GoogleCloudPrint) JobLookUp(jobID string)error{
+	form:=url.Values{}
+	form.Set("jobid",jobID)
+		if _, _, _, err := postWithRetry(gcp.robotClient, gcp.baseURL+"job", form); err != nil {
+			
+		return err
+	}
+
+	return nil
+}
+
 // Delete calls google.com/cloudprint/delete to delete a printer from GCP.
 func (gcp *GoogleCloudPrint) Delete(gcpID string) error {
 	form := url.Values{}

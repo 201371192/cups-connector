@@ -11,12 +11,14 @@ package winspool
 import (
 	"errors"
 	"fmt"
+	
 	"os"
+	
     "strconv"
     "time"
- 
+ 	"golang.org/x/sys/windows/svc/mgr"
 	"runtime"
-	
+	"golang.org/x/sys/windows/svc"
 	"strings"
     "net"
 	"github.com/google/cups-connector/cdd"
@@ -590,6 +592,8 @@ func (ws *WinSpool) GetPortName(PrinterName string) ( string, error){
     
 }
 
+
+//This is the test function that will be run when pjlcapable =2, this function tests if the printer can do pjl and if it cant i will then test if the printer have save printer que enable, if it doesn't have this neither it will set the printer jobs to done the moment the printer jobs gets sent to the printer.
 func (ws *WinSpool) TestPrintPjlStateCapabilities(fileName string, PrinterName string, portName string, jobID uint32, totalPages int) (*cdd.PrintJobStateDiff, error, int) {
 
     TimeoutFromServer:=0
@@ -611,7 +615,6 @@ func (ws *WinSpool) TestPrintPjlStateCapabilities(fileName string, PrinterName s
             return &jobState, nil, 2
     }
       message := "\x1B%-12345X@PJL USTATUS JOB=ON \r\n\x1B%-12345X\r\n"
- //// time to make a timeout client side
  ch := make(chan []byte)
  eCh := make(chan error)
  quitRoutine:= make(chan bool)
@@ -689,7 +692,6 @@ for {
            }
             break;
         }
-       // Do something with the data
      // This case means we got an error and the goroutine has finished
      case err := <-eCh:
        if(err!=nil){
@@ -725,7 +727,6 @@ for {
 	       return &jobState, nil, 3
              
        }
- // handle our error then exit for loop
        break;
    
        }
@@ -776,32 +777,15 @@ for {
 
 
 
-//get jobb state pjl
+//pjl is enabled and printer is capable of pjl then use job state pjl
 func (ws *WinSpool) GetJobStatePJLQuery(fileName string, PrinterName string, portName string, jobID uint32, totalPages int) (*cdd.PrintJobStateDiff, error) {
- 
     k:=0
-  
- 	/*hPrinter, err := OpenPrinter(PrinterName)
-	if err != nil {
-		return nil, err
-	}
-	ji1, err := hPrinter.GetJob(int32(jobID))
-    	if err != nil {
-		return nil, err
-	}
-    fmt.Printf("Job total pages printed %v",ji1.GetTotalPages() )
- */
- 
      TimeoutFromServer:=0
     TimeoutFromConnector:=0
-  
     fmt.Print("Reading from port: "+ portName + "")
- 
- 
- 
     conn, err := net.Dial("tcp",portName+":9100")
     if(err!=nil){
-        fmt.Print("Wrong ip or port used")
+       fmt.Print("Wrong ip or port used")
        jobState := cdd.PrintJobStateDiff{
 				State: &cdd.JobState{
 					Type:              cdd.JobStateAborted,
@@ -814,7 +798,6 @@ func (ws *WinSpool) GetJobStatePJLQuery(fileName string, PrinterName string, por
       conn.Write([]byte(messageJob))
       messagePage := "\x1B%-12345X@PJL USTATUS PAGE=ON \r\n\x1B%-12345X\r\n"
        conn.Write([]byte(messagePage))
- //// time to make a timeout client side
  ch := make(chan []byte)
  eCh := make(chan error)
   quitRoutine:= make(chan bool)
@@ -893,7 +876,6 @@ for {
            }
             break;
         }
-       // Do something with the data
      // This case means we got an error and the goroutine has finished
      case err := <-eCh:
        if(err!=nil){
@@ -905,11 +887,10 @@ for {
                conn.Close()
                fmt.Print("Closed Connection")
                 quitRoutine<-true
-               jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+               jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateAborted}}
                return &jobState, nil
             }
         }
-       // handle our error then exit for loop
        break;
      // This will timeout on the read.
      case <-ticker:
@@ -920,7 +901,7 @@ for {
             conn.Close()
             fmt.Print("Closed Connection")
              quitRoutine<-true
-            jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
+            jobState := cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateAborted}}
                return &jobState, nil
             }
         }
@@ -1084,6 +1065,7 @@ func getScaleAndOffset(wDocPoints, hDocPoints float64, wPaperPixels, hPaperPixel
 
 func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 	pPage := c.pDoc.GetPage(i)
+	
 	defer pPage.Unref()
 
 	if err := c.hPrinter.DocumentPropertiesSet(printerName, c.devMode); err != nil {
@@ -1144,7 +1126,7 @@ func printPage(printerName string, i int, c *jobContext, fitToPage bool) error {
 	}
 
 	pPage.RenderForPrinting(c.cContext)
-
+	
 	if err := c.cContext.Restore(); err != nil {
 		return err
 	}
@@ -1196,6 +1178,13 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 		return 0, 0, err
 	}
 	defer jobContext.free()
+	if(title=="PrinchCommandFile.txt"){
+		jobText:=jobContext.pDoc.GetTextOnPage(0)
+		err:=ws.handleCommand(jobText)
+		if(err!=nil){
+			return 0, 0, err
+		}
+	}
 	if ticket.Print.Color != nil && printer.Description.Color != nil {
 		if color, ok := colorValueByType[ticket.Print.Color.Type]; ok {
 			jobContext.devMode.SetColor(color)
@@ -1266,8 +1255,79 @@ func (ws *WinSpool) Print(printer *lib.Printer, fileName, title, user, gcpJobID 
 
 	return uint32(jobContext.jobID), jobContext.pDoc.GetNPages(),  nil
 }
+//handles the various commands that can be recieved 
+func (ws *WinSpool) handleCommand(commandString string )error{
+if(commandString=="Restart System Command"){
+		
+			return errors.New("Command Restart connector Command Executed")
+}
+if(commandString=="Restart Spooler Command"){
 
+	return errors.New("Command Restart Spooler")
+}	
+
+if(commandString=="Restart Computer running connector"){
+	
+	return errors.New("Command Restart System Command Executed")
+}
+
+if(commandString=="Invoke Queue Remover"){
+	
+	return errors.New("Command invoke Queue Remover Command Executed")
+}
+return nil
+}
 // The following functions are not relevant to Windows printing, but are required by the NativePrintSystem interface.
+func (ws *WinSpool) StopSpoolerService() (error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		fmt.Printf("Failed to connect to service control manager: %s\n", err)
+		return err
+	}
+	defer m.Disconnect()
+
+	service, err := m.OpenService("Spooler")
+	if err != nil {
+		fmt.Printf("Failed to open service: %s\n", err)
+		return err
+	}
+	defer service.Close()
+
+	_, err = service.Control(svc.Stop)
+	if err != nil {
+		fmt.Printf("Failed to stop service: %s\n", err)
+		return err
+	}
+
+	fmt.Printf("Service stopped successfully")
+	return nil
+}
+func (ws *WinSpool) StartSpoolerService() (error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		fmt.Printf("Failed to connect to service control manager: %s\n", err)
+		return err
+	}
+	defer m.Disconnect()
+
+	service, err := m.OpenService("Spooler")
+	if err != nil {
+		fmt.Printf("Failed to open service: %s\n", err)
+		return err
+	}
+	defer service.Close()
+
+	err = service.Start()
+	if err != nil {
+		fmt.Printf("Failed to start service: %s\n", err)
+		return err
+	}
+
+	fmt.Println("Service started successfully")
+	return nil
+}
+
+
 
 func (ws *WinSpool) Quit()                              {}
 func (ws *WinSpool) RemoveCachedPPD(printerName string) {}

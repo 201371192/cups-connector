@@ -78,13 +78,15 @@ func SetWriter(w io.Writer) {
 func SetLevel(l LogLevel) {
 	logger.level = l
 }
+func SetPath(filePath string){
 
+}
 // SetJournalEnabled enables or disables writing to the systemd journal. Default is false.
 func SetJournalEnabled(b bool) {
 	logger.journalEnabled = b
 }
 
-func log(level LogLevel, printerID, jobID, format string, args ...interface{}) {
+func logToEventlog(level LogLevel, printerID, jobID, format string,filePath string , args ...interface{}) {
 	if level > logger.level {
 		return
 	}

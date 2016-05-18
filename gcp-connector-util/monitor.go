@@ -25,6 +25,7 @@ func monitorConnector(context *cli.Context) {
 	if err != nil {
 		log.Fatalf("Failed to read config file: %s\n", err)
 	}
+	
 	if filename == "" {
 		fmt.Println("No config file was found, so using defaults")
 	}

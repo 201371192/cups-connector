@@ -14,12 +14,11 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	
+	"os/exec"
 	"time"
     "sync"
-    "io"
     "io/ioutil"
-	"crypto/md5"
+
     "encoding/json"
 	"github.com/google/cups-connector/cdd"
 	"github.com/google/cups-connector/gcp"
@@ -27,6 +26,7 @@ import (
 	"github.com/google/cups-connector/log"
 	"github.com/google/cups-connector/privet"
 	"github.com/google/cups-connector/xmpp"
+	
     
 )
 
@@ -38,19 +38,16 @@ type NativePrintSystem interface {
     TestPrintPjlStateCapabilities(fileName string, PrinterName string, portName string, jobID uint32, totalPages int) (*cdd.PrintJobStateDiff, error, int)
 	Print(printer *lib.Printer, fileName, title, user, gcpJobID string, ticket *cdd.CloudJobTicket) (uint32, int, error)
 	RemoveCachedPPD(printerName string)
+	StartSpoolerService() (error)
+	StopSpoolerService() (error)
+	
 }
 type PrintersInJsonFile struct {
-	LocalPrintingEnable bool `json:"local_printing_enable"`
-	CloudPrintingEnable bool `json:"cloud_printing_enable"`
-	XmppJid string `json:"xmpp_jid"`
-	RobotRefreshToken string `json:"robot_refresh_token"`
-	UserRefreshToken string `json:"user_refresh_token"`
-	ShareScope string `json:"share_scope"`
-	ProxyName string `json:"proxy_name"`
 	PrinterBlacklist []string `json:"printer_blacklist"`
-	LogLevel string `json:"log_level"`
     PrintersPjl []printerPjl `json:"printer_pjl"`
 }
+
+
 type printerQue struct{
     portName string
     jobId string
@@ -70,6 +67,8 @@ type PrinterManager struct {
 	printers *lib.ConcurrentPrinterMap
 	hashCodeJsonFileOld []byte
 	hashCodeJsonFileNew []byte
+	hashCodeConfigFileOld []byte
+	printerConfigFile lib.Config
 	// Job stats are numbers reported to monitoring.
 	jobStatsMutex sync.Mutex
 	jobsDone      uint
@@ -86,22 +85,43 @@ type PrinterManager struct {
 	nativeJobQueueSize uint
 	jobFullUsername    bool
 	shareScope         string
-
+	invokeQueRemover chan int
 	quit chan struct{}
+	logFileNewestDate string
+	
 }
+
+
+
 
 func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, privet *privet.Privet, printerPollInterval time.Duration, nativeJobQueueSize uint, jobFullUsername bool, shareScope string, jobs <-chan *lib.Job, xmppNotifications <-chan xmpp.PrinterNotification) (*PrinterManager, error) {
 	var printers *lib.ConcurrentPrinterMap
 	var queuedJobsCount map[string]uint
-    var conf PrintersInJsonFile
+    var PrinchPrinterfile PrintersInJsonFile
+	config := new(lib.Config)
 	var err error
-
-    file, err := ioutil.ReadFile("gcp-windows-connector.config.json")
-     if (err!=nil){
-      json.Unmarshal(file,&conf)
-     }
+	hashCodeConfigFileNew,_,Path:=lib.GetConfigPrinterManager("gcp-windows-connector.config.json",[]byte(""))
+  	if(reflect.DeepEqual(hashCodeConfigFileNew,[]byte(""))){
+		  config,err=lib.GetConfigByString(Path)
+	}else{
+		config=&lib.DefaultConfig
+	}
   
-   
+  
+    file, err := ioutil.ReadFile(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile")
+	
+     if (err==nil){
+      json.Unmarshal(file,&PrinchPrinterfile)
+     }
+	
+	config,err=lib.GetConfigByString(Path)
+    if (err==nil){
+
+     }
+	 if(!reflect.DeepEqual(PrinchPrinterfile.PrinterBlacklist,config.PrinterBlacklist)){
+		 PrinchPrinterfile.PrinterBlacklist=config.PrinterBlacklist
+	 }
+
 	if gcp != nil {
 		// Get all GCP printers.
 		var gcpPrinters []lib.Printer
@@ -131,8 +151,8 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
 		jobStatsMutex: sync.Mutex{},
 		jobsDone:      0,
 		jobsError:     0,
-
-        PrintersInTheJsonFile: conf,
+		hashCodeConfigFileOld: hashCodeConfigFileNew,
+        PrintersInTheJsonFile: PrinchPrinterfile,
         pjlMutex:           sync.Mutex{},
 		jobsInFlightMutex: sync.Mutex{},
 		jobsInFlight:      make(map[string]struct{}),
@@ -141,15 +161,18 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
 		nativeJobQueueSize: nativeJobQueueSize,
 		jobFullUsername:    jobFullUsername,
 		shareScope:         shareScope,
-
+		invokeQueRemover: make(chan int),
 		quit: make(chan struct{}),
+		logFileNewestDate: "",
+		
 	}
-
+	pm.HandleLogFile()
+	
 	// Sync once before returning, to make sure things are working.
 	// Ignore privet updates this first time because Privet always starts
 	// with zero printers.
 	if err = pm.syncPrinters(true); err != nil {
-		return nil, err
+		
 	}
 
 	// Initialize Privet printers.
@@ -166,12 +189,13 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
 
 	pm.syncPrintersPeriodically(printerPollInterval)
 	pm.listenNotifications(jobs, xmppNotifications)
-
+	
 	if gcp != nil {
 		for gcpPrinterID := range queuedJobsCount {
 			p, _ := printers.GetByGCPID(gcpPrinterID)
 			go gcp.HandleJobs(&p, func() { pm.incrementJobsProcessed(false) })
 		}
+		go pm.QueRemover()
 	}
 
 	return &pm, nil
@@ -200,21 +224,25 @@ func (pm *PrinterManager) syncPrintersPeriodically(interval time.Duration) {
 		}
 	}()
 }
+func (pm *PrinterManager) getLogFileInfo() string{
+	return pm.logFileNewestDate
+}
 
+//synchronizes the printers on the system with google cloud print
 func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 	log.Info("Synchronizing printers, stand by")
-	pm.hashCodeJsonFileNew = computeMd5("gcp-windows-connector.config.json")
+	pm.hashCodeJsonFileNew = lib.ComputeMd5(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile")
     var PrintersInCloud,_,_=pm.gcp.ListPrinters()
-
+	pm.HandleLogFile()
 	// Get current snapshot of native printers.
 	nativePrinters, err := pm.native.GetPrinters()
-   
+
     if err != nil {
 		return fmt.Errorf("Sync failed while calling GetPrinters(): %s", err)
 	}
  
     if (reflect.DeepEqual(pm.hashCodeJsonFileNew, pm.hashCodeJsonFileOld)==false){
-    file, err := ioutil.ReadFile("gcp-windows-connector.config.json")
+    file, err := ioutil.ReadFile(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile")
      
       json.Unmarshal(file,&pm.PrintersInTheJsonFile)
      
@@ -222,6 +250,19 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 		return fmt.Errorf("Sync failed while calling readFile(): %s", err)
 	}
     }
+	hashCodeConfigFileNew,_,Path:=lib.GetConfigPrinterManager("gcp-windows-connector.config.json",[]byte(""))
+  	if(reflect.DeepEqual(hashCodeConfigFileNew,pm.hashCodeConfigFileOld)){
+		  config,err:=lib.GetConfigByString(Path)
+		  if(err!=nil){
+			  fmt.Errorf("sync failed while calling getConfigByString() %s", err )
+		}else if(!reflect.DeepEqual(config.PrinterBlacklist, pm.PrintersInTheJsonFile.PrinterBlacklist)){
+			pm.PrintersInTheJsonFile.PrinterBlacklist=config.PrinterBlacklist
+			
+		}
+		pm.printerConfigFile=*config
+		
+	}
+
 
 	// Set CapsHash on all printers.
 	for i := range nativePrinters {
@@ -263,11 +304,11 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
      if(err!=nil){
          return fmt.Errorf("failed to marshal pm.PrintersInTheJsonFile: %s",err)
      }
-   if err = ioutil.WriteFile("gcp-windows-connector.config.json", b, 0600); err != nil {
+   if err = ioutil.WriteFile(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile", b, 0600); err != nil {
 		  return fmt.Errorf("failed to write to jsonfile: %s",err)
 	}
 	log.Infof("Finished synchronizing %d printers", len(currentPrinters))
-    
+
 	return nil
 }
 func printerNameInSlice(a string, list []printerPjl) bool {
@@ -406,16 +447,16 @@ func (pm *PrinterManager) listenNotifications(jobs <-chan *lib.Job, xmppMessages
 
 			case job := <-jobs:
 				log.DebugJobf(job.JobID, "Received job: %+v", job)
-                pm.hashCodeJsonFileNew = computeMd5("gcp-windows-connector.config.json")
+                pm.hashCodeJsonFileNew = lib.ComputeMd5(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile")
                 if (reflect.DeepEqual(pm.hashCodeJsonFileNew, pm.hashCodeJsonFileOld)==false){
-                file, _ := ioutil.ReadFile("gcp-windows-connector.config.json")
+                file, _ := ioutil.ReadFile(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile")
                 json.Unmarshal(file,&pm.PrintersInTheJsonFile)
                 pm.hashCodeJsonFileOld = pm.hashCodeJsonFileNew
              }
 				go pm.printJob(job.NativePrinterName, job.Filename, job.Title, job.User, job.JobID, job.Ticket, job.UpdateJob)
 
 			case notification := <-xmppMessages:
-				log.Debugf("Received XMPP message: %+v", notification)
+				log.Infof("Received XMPP message: %+v", notification)
 				if notification.Type == xmpp.PrinterNewJobs {
 					if p, exists := pm.printers.GetByGCPID(notification.GCPID); exists {
 						go pm.gcp.HandleJobs(&p, func() { pm.incrementJobsProcessed(false) })
@@ -474,6 +515,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 		// IN_PROGRESS). That's OK, just throw away the second instance.
 		return
 	}
+
 	defer pm.deleteInFlightJob(jobID)
 
 	if !pm.jobFullUsername {
@@ -506,11 +548,16 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
         }
     }
     pm.MutexCond.L.Lock()
-    pm.printerQue=Extend(pm.printerQue,portName, jobID)
-    for (stringInSlice(portName,pm.printerQue)) {
-        if(!firstInSlice(portName,jobID,pm.printerQue)){
+    pm.printerQue=ExtendPrinterQue(pm.printerQue,portName, jobID)
+    for  {
+		identidator:=pm.firstInThePrinterQue(portName,jobID)
+        if(identidator==0){
              pm.MutexCond.Wait()
-        }else{
+        }else if(identidator==2){
+		pm.MutexCond.L.Unlock()
+		fmt.Printf(jobID+" removed from que exiting")
+		return
+		}else{
             log.Infof(jobID+"is running")
             break;
         }
@@ -519,6 +566,69 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
     log.Infof(portName + "\n")
 	nativeJobID, TotalPages, err  := pm.native.Print(&printer, filename, title, user, jobID, ticket)
 	if err != nil {
+		if(err.Error()=="Command Restart connector Command Executed"){
+			state := cdd.PrintJobStateDiff{
+			State: &cdd.JobState{
+				Type:              cdd.JobStateDone,
+			},
+		}
+		if err := updateJob(jobID, &state); err != nil {
+			log.ErrorJob(jobID, err)
+		}
+		log.InfoJobf(jobID, "State: %s", state.State.Type)
+			os.Exit(1)
+		}
+		if(err.Error()=="Command invoke Queue Remover Command Executed"){
+			pm.invokeQueRemover<-1
+			state := cdd.PrintJobStateDiff{
+			State: &cdd.JobState{
+				Type:              cdd.JobStateDone,
+			},
+		}
+		if err := updateJob(jobID, &state); err != nil {
+			log.ErrorJob(jobID, err)
+		}
+		
+		log.InfoJobf(jobID, "State: %s", state.State.Type)
+		pm.MutexCond.L.Lock()
+        pm.printerQue = RemovePrinterJob(pm.printerQue,portName,jobID)
+        pm.MutexCond.L.Unlock()
+        pm.MutexCond.Broadcast()
+		return
+		}
+		if(err.Error()=="Command Restart System Command Executed"){
+	
+			state := cdd.PrintJobStateDiff{
+			State: &cdd.JobState{
+				Type:              cdd.JobStateDone,
+			},
+		}
+		if err := updateJob(jobID, &state); err != nil {
+			log.ErrorJob(jobID, err)
+		}
+		log.InfoJobf(jobID, "State: %s", state.State.Type)
+		pm.MutexCond.L.Lock()
+        pm.printerQue = RemovePrinterJob(pm.printerQue,portName,jobID)
+        pm.MutexCond.L.Unlock()
+      
+		h:=exec.Command("cmd","/C","shutdown","/r")
+		h.Run()
+		return
+		}
+		if(err.Error()=="Command Restart Spooler"){
+				state := cdd.PrintJobStateDiff{
+			State: &cdd.JobState{
+				Type:              cdd.JobStateDone,
+			},
+		}
+		if err := updateJob(jobID, &state); err != nil {
+			log.ErrorJob(jobID, err)
+		}
+		log.InfoJobf(jobID, "State: %s", state.State.Type)
+				pm.native.StopSpoolerService()
+				time.Sleep(time.Second*10)
+				pm.native.StartSpoolerService()
+		}
 		pm.incrementJobsProcessed(false)
 		log.ErrorJobf(jobID, "Failed to submit to native print system: %s", err)
 		state := cdd.PrintJobStateDiff{
@@ -530,6 +640,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 		if err := updateJob(jobID, &state); err != nil {
 			log.ErrorJob(jobID, err)
 		}
+	
 		return
 	}else{
         state := cdd.PrintJobStateDiff{
@@ -538,17 +649,45 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 			},
 		}
 		if err := updateJob(jobID, &state); err != nil {
-			log.ErrorJob(jobID, err)
+			log.ErrorJob("Job %s is probably deleted on the cloud", jobID)
 		}
     }
 
 	log.InfoJobf(jobID, "Submitted as native job %d + size of job is %d", nativeJobID, TotalPages)
-    
+  for  {
+	 PrinterRecievedJobState,_ := pm.native.GetJobState(printer.Name,nativeJobID)
+	 if(PrinterRecievedJobState.State.Type==cdd.JobStateDone||PrinterRecievedJobState.State.Type==cdd.JobStateAborted){
+			log.InfoJobf(jobID, "Is spooled and can't be deleted")
+		 break;
+	 }
+   if err:=pm.gcp.JobLookUp(jobID); err!=nil{
+		log.InfoJobf(jobID, "Does not exist in cloud")
+  		pm.native.StopSpoolerService()
+		  time.Sleep(time.Second*30)
+		h:=fmt.Sprintf("C:\\Windows\\System32\\spool\\PRINTERS\\000%d.SPL",nativeJobID)
+		if err:=os.Remove(h); err != nil {
+			log.ErrorJob("failed to delete SPL for job")
+		}
+		h=fmt.Sprintf("C:\\Windows\\System32\\spool\\PRINTERS\\000%d.SHD",nativeJobID)
+	    
+		if err:=os.Remove(h); err != nil {
+			log.ErrorJob("failed to delete SHD for job")
+		}
+		time.Sleep(time.Second*30) //// event
+		pm.native.StartSpoolerService()
+		pm.MutexCond.L.Lock()
+        pm.printerQue = RemovePrinterJob(pm.printerQue,portName,jobID)
+        pm.MutexCond.L.Unlock()
+        pm.MutexCond.Broadcast()
+		return
+	}
+	time.Sleep(time.Second)
+  }
+  
 	var state cdd.PrintJobStateDiff
     
 	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-  
+
     
 	for _ = range ticker.C {
       nativeState:= &cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateAborted}}
@@ -564,7 +703,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
               if(err!=nil){
                     return 
               }
-              if err = ioutil.WriteFile("gcp-windows-connector.config.json", b, 0600); err != nil {
+              if err = ioutil.WriteFile(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile", b, 0600); err != nil {
 		     return 
 	        }
             
@@ -593,7 +732,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 			}
 			pm.incrementJobsProcessed(false)
             pm.MutexCond.L.Lock()
-            pm.printerQue = Remove(pm.printerQue,portName, jobID)
+            pm.printerQue = RemovePrinterJob(pm.printerQue,portName, jobID)
             pm.MutexCond.L.Unlock()
             pm.MutexCond.Broadcast()
 			log.InfoJobf(jobID, "State: %s", state.State.Type)
@@ -606,7 +745,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 				log.ErrorJob(jobID, err)
 			}
             pm.MutexCond.L.Lock()
-               pm.printerQue = Remove(pm.printerQue,portName,jobID)
+               pm.printerQue = RemovePrinterJob(pm.printerQue,portName,jobID)
                pm.MutexCond.L.Unlock()
                pm.MutexCond.Broadcast()
 			log.InfoJobf(jobID, "State: %s", state.State.Type)
@@ -623,6 +762,7 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
 	}
 }
 
+
 // GetJobStats returns information that is useful for monitoring
 // the connector.
 func (pm *PrinterManager) GetJobStats() (uint, uint, uint, error) {
@@ -638,23 +778,10 @@ func (pm *PrinterManager) GetJobStats() (uint, uint, uint, error) {
 	return pm.jobsDone, pm.jobsError, processing, nil
 }
 
-func computeMd5(filePath string) ([]byte){
-	var result []byte 
-	var err error
-	file, err := os.Open(filePath)
-	if err != nil {
-		return result
-	}
-	defer file.Close()
-	hash:=md5.New()
-	if _, err := io.Copy(hash,file); err != nil {
-		return result
-	}
-	return hash.Sum(result)
-}
 
-//Extend slice by element
-func Extend(slice []printerQue, element string, jobId string) []printerQue {
+
+//Extends Printerque by one printerJob
+func ExtendPrinterQue(slice []printerQue, element string, jobId string) []printerQue {
 
     n := len(slice)
     if n == cap(slice) {
@@ -670,18 +797,10 @@ func Extend(slice []printerQue, element string, jobId string) []printerQue {
     return slice
 }
 
-//stringInSlice finds out if a element exist in slice
-func stringInSlice(a string, list []printerQue) bool {
-    for _, b := range list {
-        if b.portName == a {
-            return true
-        }
-    }
-    return false
-}
 
-//Remove a element from slice
-func  Remove(slice []printerQue, portName string, jobId string) []printerQue {
+
+//RemovePrinterJob removes a printer job from the printerQue
+func  RemovePrinterJob(slice []printerQue, portName string, jobId string) []printerQue {
     for i, b := range slice {
         if(b.portName==portName && b.jobId==jobId){
            printerQue := append(slice[:i], slice[i+1:]...)
@@ -692,16 +811,121 @@ func  Remove(slice []printerQue, portName string, jobId string) []printerQue {
    return slice
 }
 
-//firstInSlice finds out if a element is first in slice
-func firstInSlice(portName string,jobId string, list []printerQue ) bool {
-    for _, b := range list {
+//firstInThePrinterQue finds out if a element is first in slice
+func (pm *PrinterManager) firstInThePrinterQue(portName string,jobId string ) uint {
+    for _, b := range pm.printerQue {
         if b.portName == portName {
             if(b.jobId != jobId){
-            return false
+            return 0
             }else{
-            return true
+            return 1
             }
         }
     }
-    return false
+    return 2
 }
+/// Checks printerjobs on the cloud every 15 minutes and if a command have been invoked. deleting a job from the que, means if it have not been sent to the printer yet it will be deleted and not be sent to the printer at all
+func (pm *PrinterManager) QueRemover() {
+	ticker := time.Tick(time.Minute*15)
+	for{
+		select{
+			case h:=<-pm.invokeQueRemover:{
+				if	(h==1){
+					fmt.Println("Command invoked queRemover")
+					for _,b := range pm.printerQue{
+						if err:=pm.gcp.JobLookUp(b.jobId); err!=nil{
+							pm.MutexCond.L.Lock()
+							pm.printerQue=RemovePrinterJob(pm.printerQue,b.portName,b.jobId) 
+							fmt.Printf(b.jobId + "removed from the job que")
+							pm.MutexCond.L.Unlock()
+						}
+						pm.MutexCond.Broadcast()	
+					}
+				}
+				break
+			}
+			case <-ticker:{
+			
+				for _,b := range pm.printerQue{
+					if err:=pm.gcp.JobLookUp(b.jobId); err!=nil{
+					pm.MutexCond.L.Lock()
+					pm.printerQue=RemovePrinterJob(pm.printerQue,b.portName,b.jobId) 
+					fmt.Printf(b.jobId + "removed from the job que")
+					pm.MutexCond.L.Unlock()
+					}
+				pm.MutexCond.Broadcast()	
+				}
+			}
+		}
+	}
+}
+
+//Handles the logfile deletes the logfile and makes a copy of it in terms of oldlog.txt, when the log file have been copied a new logfile will be created
+//and the output of the log will be set to the new logfile                                                                                                                   
+func (pm *PrinterManager)HandleLogFile(){
+
+	
+	
+	
+	d,_:=os.Open(os.Getenv("appdata")+"\\Princh")
+	fi, _ := d.Readdir(-1)
+	 if(pm.logFileNewestDate==""){
+		 StringExistInFolder:= log.StringInFileInfo(fi,"PrinchConnectorLog")
+		if(StringExistInFolder!=""){
+			fmt.Println(StringExistInFolder)
+			pm.logFileNewestDate=StringExistInFolder
+		}	 
+		 
+		 
+		 
+	 }
+	 for _, fi := range fi {
+        if fi.Mode().IsRegular() {
+		
+			if(strings.HasPrefix(fi.Name(),"PrinchConnectorLog")){
+           FileDate:=strings.TrimPrefix(fi.Name(),"PrinchConnectorLog")
+		   FileDate=strings.TrimSuffix(FileDate,".txt")
+		
+		   
+         
+		  if(FileDate!=""){
+			
+			t21:=log.GetTime(FileDate)
+			t20:=time.Now()	
+			t22:=t20.Sub(t21)
+			fmt.Println(t22)
+			OneWeek,_:=time.ParseDuration("168h")
+			//TwoWeeks,_:=time.ParseDuration("336h")
+			
+			if(t22.Hours()<OneWeek.Hours()){
+			  year,month,day:=t21.Date()
+			  
+			  Date:=fmt.Sprint(year,month,day)
+			  pm.logFileNewestDate=os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+Date+".txt"
+			}else if(t22.Hours()>OneWeek.Hours()){
+		 	
+			  year,month,day:=t21.Date()
+			  Date:=fmt.Sprint(year,month,day)
+			  os.Remove(os.Getenv("appdata")+"\\Princh\\OldLog.txt")
+			  os.Link(os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+Date+".txt",os.Getenv("appdata")+"\\Princh\\OldLog.txt")
+			  os.Remove(os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+Date+".txt")
+		
+			  FindCurrentTime:=time.Now()
+			  year,month,day=FindCurrentTime.Date()
+			  CurrentDate:=fmt.Sprint(year,month,day)
+			  if(pm.logFileNewestDate!=os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+CurrentDate+".txt"){
+			  os.Create(os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+CurrentDate+".txt")
+			  pm.logFileNewestDate=os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+CurrentDate+".txt"
+			  log.SetPath(pm.logFileNewestDate) 
+			 }
+			  
+			}
+		  }
+    }
+}
+}
+fmt.Println("newest date is:"+pm.logFileNewestDate)
+d.Close()
+}
+
+

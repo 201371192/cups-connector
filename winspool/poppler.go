@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"unsafe"
+	
 )
 
 func gErrorToGoError(gerr *C.GError) error {
@@ -83,7 +84,13 @@ func (d PopplerDocument) GetPage(index int) PopplerPage {
 	p := C.poppler_document_get_page(d.nativePointer(), C.int(index))
 	return PopplerPage(uintptr(unsafe.Pointer(p)))
 }
-
+func (d PopplerDocument) GetTextOnPage(index int) string {
+	page := C.poppler_document_get_page(d.nativePointer(), C.int(index))
+	p := C.poppler_page_get_text(page)
+	
+	h:= C.GoString(p)
+	return h
+}
 func (d *PopplerDocument) Unref() {
 	C.g_object_unref(C.gpointer(*d))
 	*d = 0

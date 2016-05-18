@@ -86,7 +86,7 @@ func connector(context *cli.Context) int {
 		return 1
 	}
 	log.SetLevel(logLevel)
-
+	log.
 	if configFilename == "" {
 		log.Info("No config file was found, so using defaults")
 	} else {

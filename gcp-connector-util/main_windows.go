@@ -96,7 +96,7 @@ func createService(c *cli.Context) {
 	config := mgr.Config{
 		DisplayName:  lib.ConnectorName,
 		Description:  "Shares printers with Google Cloud Print",
-		Dependencies: []string{"Spooler"},
+		Dependencies: []string{},
 		StartType:    mgr.StartAutomatic,
 	}
 	service, err := m.CreateService(lib.ConnectorName, exePath, config)
