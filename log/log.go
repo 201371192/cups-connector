@@ -100,7 +100,7 @@ func DebugPrinterf(printerID, format string, args ...interface{}) {
 // parses the date from a file to time
 func GetTime(StringFromFileSystem string) (time.Time){
 	 		     Month_:=0
-				  	loc, _ := time.LoadLocation("Europe/Berlin")
+				 loc := time.FixedZone("GMT",2)
 			     stringArray:=strings.Split(StringFromFileSystem," ")
 				 if stringArray[1]=="January"{
 						 Month_=1

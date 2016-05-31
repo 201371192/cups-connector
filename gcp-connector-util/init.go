@@ -321,7 +321,7 @@ func initConfigFile(context *cli.Context) {
 	} else {
 		fmt.Println("\"Local printing\" means that clients print directly to the connector via local subnet,")
 		fmt.Println("and that an Internet connection is neither necessary nor used.")
-		localEnable = scanYesOrNo("Enable local printing?")
+		localEnable = false//scanYesOrNo("Enable local printing?")
 	}
 
 	var cloudEnable bool
@@ -330,7 +330,7 @@ func initConfigFile(context *cli.Context) {
 	} else {
 		fmt.Println("\"Cloud printing\" means that clients can print from anywhere on the Internet,")
 		fmt.Println("and that printers must be explicitly shared with users.")
-		cloudEnable = scanYesOrNo("Enable cloud printing?")
+		cloudEnable = true//scanYesOrNo("Enable cloud printing?")
 	}
 
 	if !localEnable && !cloudEnable {
@@ -343,14 +343,14 @@ func initConfigFile(context *cli.Context) {
 	if cloudEnable {
 		if context.IsSet("share-scope") {
 			shareScope = context.String("share-scope")
-		} else if scanYesOrNo("Retain the user OAuth token to enable automatic sharing?") {
-			shareScope = scanNonEmptyString("User or group email address to share with:")
+		} else {//if scanYesOrNo("Retain the user OAuth token to enable automatic sharing?") {
+			shareScope = "safir12324@gmail.com";//scanNonEmptyString("User or group email address to share with:")
 		}
 
 		if context.IsSet("proxy-name") {
 			proxyName = context.String("proxy-name")
 		} else {
-			proxyName = scanNonEmptyString("Proxy name for this connector:")
+			proxyName = "safir12324@gmail.com";// scanNonEmptyString("Proxy name for this connector:")
 		}
 
 		var userClient *http.Client

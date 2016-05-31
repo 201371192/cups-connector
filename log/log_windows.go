@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	
+	"time"
 	"github.com/google/cups-connector/lib"
 	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -35,17 +35,23 @@ var logger struct {
 
 func init() {
 	logger.level = INFO
-		d,_:=os.Open(os.Getenv("appdata")+"\\Princh")
+		d,err:=os.Open(os.Getenv("appdata")+"\\Princh")
+		if(err!=nil){
+				os.Mkdir(os.Getenv("appdata")+"\\Princh",777)
+		}
 	fi, _ := d.Readdir(-1)
 	 if(logger.filePath==""){
 		 StringExistInFolder:= StringInFileInfo(fi,"PrinchConnectorLog")
 		if(StringExistInFolder!=""){
-			fmt.Println(StringExistInFolder)
 			logger.filePath=StringExistInFolder
-		}	 
-		 
-		 
-		 
+		}	
+		if(StringExistInFolder==""){
+			  FindCurrentTime:=time.Now()
+			  year,month,day:=FindCurrentTime.Date()
+			  CurrentDate:=fmt.Sprint(year,month,day)
+			  os.Create(os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+CurrentDate+".txt")
+		      logger.filePath=os.Getenv("appdata")+"\\Princh\\PrinchConnectorLog"+CurrentDate+".txt"
+		} 
 	 }
 	
 }
@@ -98,9 +104,9 @@ func logToEventlog(level LogLevel, printerID, jobID, format string, args ...inte
 	}
 
 	if printerID != "" {
-		message = fmt.Sprintf(logPrinterFormat, printerID, message)
+			message = fmt.Sprintf(logPrinterFormat, printerID, message)
 	} else if jobID != "" {
-		message = fmt.Sprintf(logJobFormat, jobID, message)
+		 message = fmt.Sprintf(logJobFormat, jobID, message)
 	}
 
 	if level == DEBUG || level == FATAL {
@@ -110,13 +116,13 @@ func logToEventlog(level LogLevel, printerID, jobID, format string, args ...inte
 
 	switch level {
 	case FATAL, ERROR:
-		logger.elog.Error(1, message)
+	//	logger.elog.Error(1, message)
 		logToFile(message)
 	case WARNING:
-		logger.elog.Warning(2, message)
+	//	logger.elog.Warning(2, message)
 		logToFile(message)
 	case INFO, DEBUG:
-		logger.elog.Info(3, message)
+	//	logger.elog.Info(3, message)
 		logToFile(message)
 	}
 }

@@ -109,13 +109,24 @@ func NewPrinterManager(native NativePrintSystem, gcp *gcp.GoogleCloudPrint, priv
   
   
     file, err := ioutil.ReadFile(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile")
-	
-     if (err==nil){
+	if(err!=nil){
+		os.Create(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile")
+		var PrintersPjlFile PrintersInJsonFile
+		err=nil
+		b, err := json.MarshalIndent(PrintersPjlFile,"","")
+		if(err!=nil){
+			   if err = ioutil.WriteFile(os.Getenv("appdata")+"\\Princh\\PrinchPrinterfile", b, 0600); err != nil {
+			  return nil, err
+			   
+	}
+		}
+		
+	}
       json.Unmarshal(file,&PrinchPrinterfile)
-     }
+     
 	
 	config,err=lib.GetConfigByString(Path)
-    if (err==nil){
+    if (err!=nil){
 
      }
 	 if(!reflect.DeepEqual(PrinchPrinterfile.PrinterBlacklist,config.PrinterBlacklist)){
@@ -236,7 +247,6 @@ func (pm *PrinterManager) syncPrinters(ignorePrivet bool) error {
 	pm.HandleLogFile()
 	// Get current snapshot of native printers.
 	nativePrinters, err := pm.native.GetPrinters()
-
     if err != nil {
 		return fmt.Errorf("Sync failed while calling GetPrinters(): %s", err)
 	}
@@ -550,14 +560,14 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
     pm.MutexCond.L.Lock()
     pm.printerQue=ExtendPrinterQue(pm.printerQue,portName, jobID)
     for  {
-		identidator:=pm.firstInThePrinterQue(portName,jobID)
-        if(identidator==0){
+		identicator:=pm.firstInThePrinterQue(portName,jobID)
+        if(identicator=="Not First"){
              pm.MutexCond.Wait()
-        }else if(identidator==2){
+        }else if(identicator=="Not First or in the que"){
 		pm.MutexCond.L.Unlock()
 		fmt.Printf(jobID+" removed from que exiting")
 		return
-		}else{
+		}else if (identicator=="First"){
             log.Infof(jobID+"is running")
             break;
         }
@@ -691,10 +701,10 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
     
 	for _ = range ticker.C {
       nativeState:= &cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateAborted}}
-        if(pjlEnabled && pjlCapable==1){
+        if(pjlEnabled && pjlCapable==1){ //// printer can pjl and pjl is enabled
                 nativeState, err = pm.native.GetJobStatePJLQuery(title, printer.Name,portName,nativeJobID, TotalPages)
                // nativeState, err = pm.native.GetJobState(printer.Name, nativeJobID)
-        }else if (pjlEnabled && pjlCapable==2){
+        }else if (pjlEnabled && pjlCapable==2){ //// printer is gonna be tested
              nativeState, err,pjlCapable = pm.native.TestPrintPjlStateCapabilities(title, printer.Name,portName,nativeJobID, TotalPages)
              if(pjlCapable!=2){
                 pm.pjlMutex.Lock()
@@ -709,9 +719,9 @@ func (pm *PrinterManager) printJob(nativePrinterName, filename, title, user, job
             
                 pm.pjlMutex.Unlock()
              }
-        }else if(pjlCapable==3){
+        }else if(pjlCapable==3){ /// printer can not do pjl and jobs does not get saved in the winspooler printer que
            nativeState,err= pm.native.GetJobState(printer.Name,nativeJobID)
-        }else{
+        }else if(pjlCapable==0){ /// printer can not do pjl and jobs does get saved in the winspoolers printer que 
          nativeState = &cdd.PrintJobStateDiff{State: &cdd.JobState{ Type: cdd.JobStateDone}}
          
         }
@@ -812,17 +822,17 @@ func  RemovePrinterJob(slice []printerQue, portName string, jobId string) []prin
 }
 
 //firstInThePrinterQue finds out if a element is first in slice
-func (pm *PrinterManager) firstInThePrinterQue(portName string,jobId string ) uint {
+func (pm *PrinterManager) firstInThePrinterQue(portName string,jobId string ) string {
     for _, b := range pm.printerQue {
         if b.portName == portName {
             if(b.jobId != jobId){
-            return 0
+            return "Not First"
             }else{
-            return 1
+            return "First"
             }
         }
     }
-    return 2
+    return "Not First or in the que"
 }
 /// Checks printerjobs on the cloud every 15 minutes and if a command have been invoked. deleting a job from the que, means if it have not been sent to the printer yet it will be deleted and not be sent to the printer at all
 func (pm *PrinterManager) QueRemover() {
@@ -893,7 +903,6 @@ func (pm *PrinterManager)HandleLogFile(){
 			t21:=log.GetTime(FileDate)
 			t20:=time.Now()	
 			t22:=t20.Sub(t21)
-			fmt.Println(t22)
 			OneWeek,_:=time.ParseDuration("168h")
 			//TwoWeeks,_:=time.ParseDuration("336h")
 			
@@ -924,7 +933,6 @@ func (pm *PrinterManager)HandleLogFile(){
     }
 }
 }
-fmt.Println("newest date is:"+pm.logFileNewestDate)
 d.Close()
 }
 
